@@ -1,0 +1,19 @@
+# Build output and release packages (rebuild with scripts\build.ps1 / scripts\package.ps1)
+/build/
+/dist/
+
+# Per-frame soak data: tens of MB per run. Summaries and per-sample CSVs stay in the repo;
+# regenerate the frames with benchmarks\run-phase1.ps1 -SoakSeconds ...
+/benchmarks/results/**/frames_soak.csv
+
+# Crash dumps and local logs
+*.dmp
+*.log
+
+# Editor / IDE
+.vs/
+.vscode/
+*.user
+
+# Original icon export; the copy used by the build is resources/app-icon.png
+/GlowingVirtualDesktopWindowsIcon.png

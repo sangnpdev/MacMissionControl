@@ -1,0 +1,4 @@
+"scenario","windows","ws_peak_mb","ws_end_mb","private_peak_mb","private_end_mb","cpu_avg_pct","cpu_max_pct","gpu_dedicated_peak_mb","gpu_shared_peak_mb","handles_end","frames","refresh_ms","fps_mean","interval_mean_ms","interval_p95_ms","interval_p99_ms","interval_max_ms","long_frames","work_mean_ms","work_max_ms","open_latency_mean_ms","open_latency_max_ms"
+"idle","0","34.98","34.95","26.32","26.25","0.001","0.077","5.18","3.03","1021",,,,,,,,,,,,
+"windows_5","5","44.6","44.6","28.57","28.57","0.567","4.62","5.18","3.03","1072","2538","4.167","240.9","4.152","4.272","4.33","4.719","0","0.3807","2.9213","8.48","44.76"
+"windows_30","30","44.57","44.57","28.23","28.23","0.51","3.087","5.18","3.03","1072","2526","4.167","237.6","4.21","4.264","4.419","20.834","15","1.7848","20.5246","21.21","42.88"

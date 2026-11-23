@@ -1,0 +1,35 @@
+// Version resource (shown in Explorer > Properties > Details). Numbers come from CMake's project(VERSION).
+#include <winres.h>
+
+// The first icon resource is the exe icon (Explorer, taskbar, Start); also used for the tray.
+// Built from app-icon.png by scripts\make-icon.ps1.
+1 ICON "app.ico"
+
+#define MC_STR2(x) #x
+#define MC_STR(x) MC_STR2(x)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION MC_VERSION_MAJOR, MC_VERSION_MINOR, MC_VERSION_PATCH, 0
+ PRODUCTVERSION MC_VERSION_MAJOR, MC_VERSION_MINOR, MC_VERSION_PATCH, 0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Mission Control for Windows"
+            VALUE "FileVersion", MC_STR(MC_VERSION_MAJOR) "." MC_STR(MC_VERSION_MINOR) "." MC_STR(MC_VERSION_PATCH)
+            VALUE "ProductName", "Mission Control for Windows"
+            VALUE "ProductVersion", MC_STR(MC_VERSION_MAJOR) "." MC_STR(MC_VERSION_MINOR) "." MC_STR(MC_VERSION_PATCH)
+            VALUE "OriginalFilename", "MissionControl.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -1,0 +1,40 @@
+{
+  "$schemaVersion": 1,
+  "entrance": {
+    "spring": { "stiffness": 260, "dampingRatio": 0.86, "mass": 1, "initialVelocity": 0 },
+    "staggerStep": 0.012,
+    "staggerMax": 0.08,
+    "minimizedStartScale": 0.85
+  },
+  "exit": {
+    "spring": { "stiffness": 320, "dampingRatio": 0.92, "mass": 1, "initialVelocity": 0 }
+  },
+  "dim": {
+    "opacity": 0.55,
+    "inDuration": 0.28,
+    "outDuration": 0.22,
+    "inEasing": "emphasized",
+    "outEasing": "easeInOut"
+  },
+  "hover": {
+    "scale": 1.03,
+    "spring": { "stiffness": 420, "dampingRatio": 0.8, "mass": 1, "initialVelocity": 0 }
+  },
+  "desktopTransition": {
+    "duration": 0.45,
+    "easing": "emphasized",
+    "parallax": 0.25
+  },
+  "gesture": {
+    "rubberBand": 0.15,
+    "projection": 0.15,
+    "spring": { "stiffness": 300, "dampingRatio": 0.9, "mass": 1, "initialVelocity": 0 }
+  },
+  "blur": {
+    "enabled": false,
+    "intensity": 0
+  },
+  "integration": {
+    "takeoverWinTab": true
+  }
+}
