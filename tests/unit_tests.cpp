@@ -561,6 +561,8 @@ TEST(profile_fixed_strips_for_apps_that_report_nothing) {
     CHECK(stripProfileFor(f, {}, {}).fixedStrip && stripProfileFor(f, {}, {}).rightGap == 10);
     f.className = L"Other";                                            // same exe, another window class: no profile
     CHECK(!stripProfileFor(f, {}, {}).coverable);
+    f.className = L"Chrome_WidgetWin_1"; f.exeName = L"discord.exe";
+    CHECK(stripProfileFor(f, {}, {}).fixedStrip && stripProfileFor(f, {}, {}).leftFromRight == 106);
     f.exeName = L"warp.exe"; f.className = L"Window Class";
     CHECK(stripProfileFor(f, {}, {}).heightLogical == 35);
 }

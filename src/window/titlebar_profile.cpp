@@ -26,6 +26,7 @@ StripProfile stripProfileFor(const TitleBarFacts& f, const std::vector<std::wstr
     struct Fixed { const wchar_t *exe, *cls; double leftFromRight, rightGap, height; const char* why; };
     static const Fixed fixed[] = {
         {L"zalo.exe", L"Chrome_WidgetWin_1", 157, 0, 24, "Zalo (measured)"},                       // 3 buttons ~52x23, flush right
+        {L"discord.exe", L"Chrome_WidgetWin_1", 106, 0, 33, "Discord (measured)"},                    // 32x31 buttons, 1 px from the top and right
         {L"docker desktop.exe", L"Chrome_WidgetWin_1", 148, 10, 62, "Docker Desktop (measured)"},  // 46 px buttons in a 62 px header
         {L"warp.exe", L"Window Class", 138, 0, 35, "Warp (measured)"},                            // 46x35 buttons, flush right
         {L"photos.exe", L"WinUIDesktopWin32WindowClass", 145, 1, 48, "Photos (measured)"},        // 48x47 buttons
