@@ -12,6 +12,8 @@
 #include "app/tray.h"
 #include "input/keyboard_hook.h"
 #include "rendering/compositor_thread.h"
+#include <map>
+
 #include "ui/layout.h"
 #include "window/window_filter.h"
 #include "window/window_manager.h"
@@ -96,6 +98,7 @@ private:
     AnimationConfig cfg_;
     WindowFilterRules rules_;
     LayoutParams layout_;
+    std::map<HWND, Rect> lastSlots_;  // screen coordinates; keeps cards in place when windows come and go
     WindowManager wm_;
     CompositorThread comp_;
     std::vector<WindowInfo> windows_;

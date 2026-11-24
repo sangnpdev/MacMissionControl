@@ -164,6 +164,91 @@ TEST(layout_keeps_reading_order) {
     CHECK(out[1].x < out[0].x);
 }
 
+// ---------- Adaptive spatial layout ----------
+static std::vector<Rect> mixedWindows(int n) {
+    std::vector<Rect> in;
+    for (int i = 0; i < n; ++i) in.push_back({double(i * 211 % 1500), double(i * 97 % 800), 500.0 + (i * 7 % 5) * 250, 300.0 + (i * 3 % 4) * 220});
+    return in;
+}
+
+TEST(layout_is_deterministic) {
+    const auto in = mixedWindows(11);
+    CHECK(layoutOverview({0, 0, 1920, 1080}, in, {}) == layoutOverview({0, 0, 1920, 1080}, in, {}));
+}
+
+TEST(layout_sizes_differ_but_stay_comparable) {
+    LayoutParams p;
+    p.labelHeight = 30;
+    const auto in = mixedWindows(9);
+    const auto out = layoutOverview({0, 0, 1920, 1080}, in, p);
+    double lo = 1e9, hi = 0, minW = 1e9, maxW = 0;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const double s = out[i].w / in[i].w;
+        lo = std::min(lo, s); hi = std::max(hi, s); minW = std::min(minW, out[i].w); maxW = std::max(maxW, out[i].w);
+    }
+    CHECK(maxW > minW * 1.3);  // cards are not one size
+    CHECK(hi < lo * 4.0);   // but no tiny/huge extremes
+}
+
+TEST(layout_stable_when_window_closes) {
+    LayoutParams p;
+    p.labelHeight = 30;
+    const Rect area{0, 0, 1920, 1080};
+    auto in = mixedWindows(12);
+    const auto a = layoutOverview(area, in, p);
+    in.erase(in.begin() + 5);
+    std::vector<Rect> prev = a;
+    prev.erase(prev.begin() + 5);
+    const auto b = layoutOverview(area, in, p, prev);
+    CHECK(b.size() == 11);
+    for (std::size_t i = 0; i < b.size(); ++i) CHECK(b[i] == prev[i]);
+}
+
+TEST(layout_new_window_goes_to_free_space_without_moving_others) {
+    LayoutParams p;
+    p.labelHeight = 30;
+    const Rect area{0, 0, 1920, 1080};
+    auto in = mixedWindows(2);
+    const auto a = layoutOverview(area, in, p);
+    in.push_back({100, 100, 400, 300});
+    std::vector<Rect> prev = a;
+    prev.push_back({});  // new window
+    const auto b = layoutOverview(area, in, p, prev);
+    CHECK(b.size() == 3);
+    for (std::size_t i = 0; i < 2; ++i) CHECK(b[i] == a[i]);
+    CHECK(!b[2].empty());
+    CHECK_NEAR(b[2].w / b[2].h, 400.0 / 300.0, 1e-9);
+    for (std::size_t i = 0; i < 2; ++i) CHECK(!b[2].intersects(Rect{b[i].x, b[i].y, b[i].w, b[i].h + p.labelHeight}));
+    CHECK(b[2].x >= p.padding && b[2].right() <= area.right() - p.padding);
+    CHECK(b[2].y >= p.padding && b[2].bottom() + p.labelHeight <= area.bottom() - p.padding);
+}
+
+TEST(layout_full_relayout_when_no_room_or_many_closed) {
+    LayoutParams p;
+    const Rect area{0, 0, 1920, 1080};
+    auto in = mixedWindows(20);
+    const auto a = layoutOverview(area, in, p);
+    in.push_back({0, 0, 1600, 1000});
+    std::vector<Rect> prev = a;
+    prev.push_back({});
+    const auto b = layoutOverview(area, in, p, prev);  // no free slot that large: everything is re-laid out
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        CHECK(!b[i].empty());
+        for (std::size_t j = i + 1; j < b.size(); ++j) CHECK(!b[i].intersects(b[j]));
+    }
+    // 20 -> 1 window: the survivor grows instead of staying tiny.
+    std::vector<Rect> one{in[0]}, prevOne{a[0]};
+    CHECK(layoutOverview(area, one, p, prevOne)[0].w > a[0].w * 1.25);
+}
+
+TEST(layout_spacing_between_cards) {
+    LayoutParams p;
+    const auto out = layoutOverview({0, 0, 1920, 1080}, mixedWindows(8), p);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        for (std::size_t j = i + 1; j < out.size(); ++j)
+            CHECK(!scaled(out[i], 1.0).intersects(Rect{out[j].x - p.spacing + 1e-6, out[j].y - p.spacing + 1e-6, out[j].w + 2 * p.spacing - 2e-6, out[j].h + 2 * p.spacing - 2e-6}));
+}
+
 // ---------- Window filter ----------
 static WindowFacts normal() {
     WindowFacts f;

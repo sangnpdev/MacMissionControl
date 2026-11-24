@@ -270,10 +270,17 @@ std::vector<CardTarget> App::plan() {
             area.h -= stripLayout_.band.h;
         }
         std::vector<Rect> rects;
-        for (auto i : idx) rects.push_back(windows_[i].bounds);
-        const auto out = layoutOverview(area, rects, lp);
+        std::vector<Rect> prev;
+        for (auto i : idx) {
+            rects.push_back(windows_[i].bounds);
+            const auto it = lastSlots_.find(windows_[i].hwnd);
+            prev.push_back(it == lastSlots_.end() ? Rect{} : it->second);
+        }
+        const auto out = layoutOverview(area, rects, lp, prev);
         for (std::size_t k = 0; k < idx.size(); ++k) slots_[idx[k]] = out[k];
     }
+    lastSlots_.clear();
+    for (std::size_t i = 0; i < windows_.size(); ++i) lastSlots_[windows_[i].hwnd] = slots_[i];
     std::vector<CardTarget> cards;
     for (std::size_t i = 0; i < windows_.size(); ++i) {
         const WindowInfo& w = windows_[i];
@@ -306,6 +313,7 @@ void App::open() {
         title[WideCharToMultiByte(CP_UTF8, 0, w.title.c_str(), int(w.title.size()), title, sizeof title - 1, nullptr, nullptr)] = 0;
         log::write("  %p min=%d [%.0f,%.0f %.0fx%.0f] %s", static_cast<void*>(w.hwnd), int(w.minimized), w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h, title);
     }
+    lastSlots_.clear();           // a fresh open lays out from scratch
     auto strip = stripContent();  // first: plan() leaves room for the strip
     auto cards = plan();
     focus_ = nullptr;
