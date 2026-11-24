@@ -41,6 +41,8 @@ private:
     static LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT onMessage(HWND self, UINT msg, WPARAM wp, LPARAM lp);
 
+    bool isActive(HWND fg) const;  // fg is the target or owned by it
+    void setActive(bool active);
     void place();        // geometry + z-order; hides while the target is minimized or cloaked
     void sampleColor();  // title bar color next to the buttons
     void scheduleColorSamples(int firstDelayMs);  // several samples over the next ~1.4 s after the first

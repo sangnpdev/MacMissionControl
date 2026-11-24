@@ -199,16 +199,26 @@ void EdgePoc::requestPlace() {
     PostMessageW(overlay_, kMsgPlace, 0, 0);
 }
 
+// The application is active when the foreground window is the target or a window owned by it: Chromium shows its
+// menus, bubbles and IME windows as separate top-level windows owned by the browser window, and those can take the
+// foreground while the user is still in the browser (measured: with the strict "foreground == target" test the dots
+// turned grey as soon as such a window was activated and came back only when it closed).
+bool EdgePoc::isActive(HWND fg) const {
+    return fg && (fg == target_ || GetAncestor(fg, GA_ROOTOWNER) == target_);
+}
+
+void EdgePoc::setActive(bool active) {
+    if (active == active_) return;
+    active_ = active;
+    inactive_.easeTo(active ? 0.0 : 1.0, now(), 0.18, anim::easing::easeInOut);
+    scheduleAnimation();
+    scheduleColorSamples(80);  // Edge repaints its title bar (active / inactive colors differ) a moment later
+    if (active) SetTimer(overlay_, kTimerPlace, 60, nullptr);  // Edge may finish raising itself after the event
+}
+
 void EdgePoc::onForeground(HWND fg) {
     if (!overlay_) return;
-    const bool active = fg == target_;
-    if (active != active_) {
-        active_ = active;
-        inactive_.easeTo(active ? 0.0 : 1.0, now(), 0.18, anim::easing::easeInOut);
-        scheduleAnimation();
-        scheduleColorSamples(80);  // Edge repaints its title bar (active / inactive colors differ) a moment later
-        if (active) SetTimer(overlay_, kTimerPlace, 60, nullptr);  // Edge may finish raising itself after the event
-    }
+    setActive(isActive(fg));
     requestPlace();  // any foreground change can reshuffle Z-order around Edge
 }
 
@@ -231,6 +241,7 @@ void EdgePoc::sampleColor() {
 
 void EdgePoc::place() {
     placePending_ = false;
+    setActive(isActive(GetForegroundWindow()));  // heals a missed or misleading foreground event (place() runs on many events)
     if (!IsWindow(target_)) {
         const HWND gone = target_;
         stop();
