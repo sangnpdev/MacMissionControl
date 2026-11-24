@@ -20,9 +20,10 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 constexpr UINT kMsgPlace = WM_APP + 41;
-constexpr UINT_PTR kTimerAnim = 1, kTimerColor = 2, kTimerPlace = 3, kTimerGone = 4;
+constexpr UINT_PTR kTimerAnim = 1, kTimerColor = 2, kTimerPlace = 3, kTimerGone = 4, kTimerMove = 5;
 constexpr UINT kMsgConsider = WM_APP + 43;
 constexpr UINT_PTR kTimerRetry = 1, kTimerReorder = 2;
+constexpr double kMoveLead = 0.008;  // s: compensates the latency of moving our window (see startMove)
 constexpr wchar_t kClass[] = L"MCEdgeTrafficLightsPoc";
 constexpr wchar_t kManagerClass[] = L"MCEdgeTrafficLightsManager";
 EdgeOverlays* g_overlays = nullptr;  // one instance only; the WinEvent callback has no user data
@@ -179,6 +180,7 @@ void EdgePoc::stop() {
         KillTimer(overlay_, kTimerColor);
         KillTimer(overlay_, kTimerPlace);
         KillTimer(overlay_, kTimerGone);
+        KillTimer(overlay_, kTimerMove);
         HWND w = overlay_;
         overlay_ = nullptr;  // before DestroyWindow: its messages must see a stopped object
         DestroyWindow(w);
@@ -187,7 +189,7 @@ void EdgePoc::stop() {
     gdi_ = nullptr;
     if (target_) log::write("edge overlay: detached from %p", static_cast<void*>(target_));
     target_ = nullptr;
-    animating_ = placePending_ = false;
+    animating_ = placePending_ = moving_ = false;
     hot_ = pressed_ = -1;
 }
 
@@ -204,7 +206,7 @@ void EdgePoc::onForeground(HWND fg) {
         active_ = active;
         inactive_.easeTo(active ? 0.0 : 1.0, now(), 0.18, anim::easing::easeInOut);
         scheduleAnimation();
-        scheduleColorSamples();  // Edge repaints its title bar (active / inactive colors differ) a moment later
+        scheduleColorSamples(80);  // Edge repaints its title bar (active / inactive colors differ) a moment later
         if (active) SetTimer(overlay_, kTimerPlace, 60, nullptr);  // Edge may finish raising itself after the event
     }
     requestPlace();  // any foreground change can reshuffle Z-order around Edge
@@ -212,10 +214,10 @@ void EdgePoc::onForeground(HWND fg) {
 
 // Edge changes its title bar color a variable time after activation, and a single early sample kept the old
 // color (measured: navy patch on a grey inactive bar). Sample at 80 ms and three more times, ending after ~1.4 s.
-void EdgePoc::scheduleColorSamples() {
+void EdgePoc::scheduleColorSamples(int firstDelayMs) {
     if (!overlay_) return;
     colorChecks_ = 3;
-    SetTimer(overlay_, kTimerColor, 80, nullptr);
+    SetTimer(overlay_, kTimerColor, UINT(firstDelayMs), nullptr);
 }
 
 void EdgePoc::sampleColor() {
@@ -281,6 +283,17 @@ void EdgePoc::place() {
     const bool enChanged = !std::equal(std::begin(en), std::end(en), std::begin(enabled_));
     std::copy(std::begin(en), std::end(en), std::begin(enabled_));
     const bool changed = !(r == rect_) || dpi != dpi_ || zoomed != zoomed_ || enChanged || !IsWindowVisible(overlay_);
+    // Maximize / restore: the window jumps to its final rect at once while Windows animates a picture of it for
+    // ~0.3 s, so a real window placed at the final rect would be ahead of it. Follow the animation instead.
+    ANIMATIONINFO ai{sizeof ai};  // "Animate windows when minimizing and maximizing": off = the window just jumps
+    const bool windowsAnimate = SystemParametersInfoW(SPI_GETANIMATION, sizeof ai, &ai, 0) && ai.iMinAnimate != 0;
+    if (owned_ && windowsAnimate && zoomed != zoomed_ && !rect_.empty() && IsWindowVisible(overlay_) && !moving_) {
+        RECT cur{};
+        GetWindowRect(overlay_, &cur);
+        startMove({double(cur.left), double(cur.top), r.w, r.h}, r);
+    } else if (moving_) {
+        moveTo_ = r;  // the target moved again (drag during the animation): retarget, keep the progress
+    }
     rect_ = r;
     dpi_ = dpi;
     zoomed_ = zoomed;
@@ -293,14 +306,18 @@ void EdgePoc::place() {
         return false;
     };
     if (owned_) {
-        SetWindowPos(overlay_, nullptr, int(r.x), int(r.y), int(r.w), int(r.h), SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+        // While following the animation the tick owns the position; this call only keeps the overlay shown and sized.
+        SetWindowPos(overlay_, nullptr, int(r.x), int(r.y), int(r.w), int(r.h), SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW | (moving_ ? SWP_NOMOVE : 0));
     } else {
         HWND above = GetWindow(target_, GW_HWNDPREV);
         while (above && (above == overlay_ || ownedByTarget(above))) above = GetWindow(above, GW_HWNDPREV);
         SetWindowPos(overlay_, above ? above : HWND_TOP, int(r.x), int(r.y), int(r.w), int(r.h), SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
     if (changed) {
-        scheduleColorSamples();  // re-sample once the window stopped moving / repainting
+        // The title bar color does not change with the geometry, so keep the current color and look again only after
+        // the maximize / restore animation is over: a sample taken while it runs hit the animation's grey / black
+        // (measured: wrong color at ~100 ms after the click, correct again at ~350 ms).
+        scheduleColorSamples(550);
         tl_ = layoutTrafficLightsIn({0, 0, r.w, r.h}, dpi, {});
         render();
     }
@@ -355,6 +372,33 @@ void EdgePoc::animate() {
     }
 }
 
+// Measured by capturing a bright test window at ~30 fps (maximize and restore alike): the picture starts moving
+// after ~70 ms and covers its distance in ~200 ms with a strong ease-out; fitted with cubic-bezier(0.5, 0.2, 0, 1)
+// (rmse 2% of the travel). Our own window lags the animation by about a frame (timer + present), so it starts
+// kMoveLead earlier than the fit.
+void EdgePoc::startMove(const Rect& from, const Rect& to) {
+    moveFrom_ = from;
+    moveTo_ = to;
+    moving_ = true;
+    moveP_.jump(0.0);
+    moveP_.easeTo(1.0, now(), 0.200, anim::CubicBezier{0.5, 0.2, 0.0, 1.0}, 0.070 - kMoveLead);
+    SetTimer(overlay_, kTimerMove, 4, nullptr);  // runs only for this transition (about 0.26 s)
+    moveTick();
+}
+
+void EdgePoc::moveTick() {
+    if (!moving_ || !overlay_) return;
+    const double t = now(), p = moveP_.value(t);
+    const bool done = moveP_.settled(t);
+    const Rect at = done ? moveTo_ : Rect{lerp(moveFrom_.x, moveTo_.x, p), lerp(moveFrom_.y, moveTo_.y, p), moveTo_.w, moveTo_.h};
+    SetWindowPos(overlay_, nullptr, int(std::lround(at.x)), int(std::lround(at.y)), int(moveTo_.w), int(moveTo_.h),
+                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    if (done) {
+        KillTimer(overlay_, kTimerMove);
+        moving_ = false;
+    }
+}
+
 void EdgePoc::onHover(int index) {
     if (index >= 0 && !enabled_[index]) index = -1;  // a disabled dot does not react
     if (index == hot_) return;
@@ -396,6 +440,7 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TIMER:
         if (wp == kTimerAnim) animate();
+        else if (wp == kTimerMove) moveTick();
         else if (wp == kTimerPlace) { KillTimer(h, kTimerPlace); place(); }
         else if (wp == kTimerGone) { KillTimer(h, kTimerGone); place(); }
         else if (wp == kTimerColor) {
