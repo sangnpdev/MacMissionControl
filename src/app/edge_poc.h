@@ -12,26 +12,52 @@
 
 #include "animation/animation.h"
 #include "ui/traffic_lights.h"
+#include "window/app_registry.h"
+#include "window/compat_engine.h"
 
 namespace mc {
 
 // Overlay over ONE window. Created and owned by EdgeOverlays, which feeds it the window events.
+// What the app knows about one application it has seen (for the settings window). One entry per exe, bounded.
+struct AppInfo {
+    std::wstring exe, path, className, title;  // path / class / title of the latest window
+    DWORD pid = 0;
+    Verdict verdict = Verdict::Unsupported;
+    StripSource source = StripSource::None;
+    std::string reason;
+    double heightLogical = 0;
+    bool known = false;  // assessed at least once (an app turned off before it was ever seen has no verdict)
+    int windows = 0;     // windows covered right now
+    ULONGLONG lastSeen = 0;
+};
+
 class EdgePoc {
 public:
     ~EdgePoc() { stop(); }
-    // Which apps may be covered and which never (exe names, lower-case); see titlebar_profile.h.
+    // Everything that decides which windows are covered: per-app / per-window settings and the mode.
     struct Rules {
-        std::vector<std::wstring> extraExes, excludeExes;
+        RegistryData data;
     };
-    // True for a visible, unowned top-level window of a verified app with caption buttons. `heightLogical` gets the
-    // strip height of its profile (0 = DWM bounds). `maybeLater` is set when the window would qualify but its
-    // caption-button bounds are not available yet (a fresh window): retry shortly.
-    static bool coverable(HWND w, const Rules& rules, double* heightLogical, bool* maybeLater = nullptr);
+    // The outcome of evaluating one window.
+    struct Cover {
+        Assessment a;
+        double heightLogical = 0;  // native strip height to cover (0 = DWM bounds), after the user's override
+        std::wstring exe, path, className, title;  // filled whenever the process is known, covered or not
+        DWORD pid = 0;
+        bool policyOff = false;  // the user turned this window off: it was not assessed
+        std::string why;         // the decision's reason
+    };
+    // True when `w` is a visible, unowned top-level window that the compatibility engine and the user's settings
+    // allow to cover. `maybeLater` is set when the caption buttons could not be located yet (a fresh window):
+    // retry shortly. Elevated windows, our own windows and system shell processes never qualify.
+    static bool evaluate(HWND w, const Rules& rules, Cover* out, bool* maybeLater = nullptr);
     // `owner` receives kMsgReap with the target in WPARAM once the target is gone (posted, never sent).
-    bool attach(HINSTANCE inst, HWND target, HWND owner, double heightLogical);
+    bool attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover);
     void stop();  // immediate: timers, overlay window and GDI/D2D objects are released
     bool running() const { return overlay_ != nullptr; }
     DWORD pid() const { return pid_; }
+    bool owned() const { return owned_; }  // false: Z-order must be tracked by events
+    const std::wstring& exe() const { return exe_; }
     void requestPlace();            // coalesced; the geometry is read when the message is handled
     void onForeground(HWND fg);     // active / inactive look
 
@@ -59,8 +85,11 @@ private:
     HWND target_ = nullptr, overlay_ = nullptr, owner_ = nullptr;
     HINSTANCE inst_ = nullptr;
     DWORD pid_ = 0;
-    HANDLE process_ = nullptr, wait_ = nullptr;  // wakes us when Edge exits (no DESTROY event is delivered then)
     bool placePending_ = false, active_ = false, animating_ = false;
+    std::wstring exe_;
+    Assessment assess_;           // how this window's buttons are located (hit-test geometry is refreshed on zoom / DPI change)
+    bool hitZoomed_ = false;
+    UINT hitDpi_ = 0;
     double heightLogical_ = 0.0;  // native strip height of the app's profile; 0 = DWM bounds
     bool enabled_[3] = {true, true, true};  // close / minimize / zoom as the window's style allows
     bool owned_ = false;  // overlay is an owned window of the target (system keeps it above Edge)
@@ -93,6 +122,10 @@ public:
     bool start(HINSTANCE inst, const std::wstring& titleContains, EdgePoc::Rules rules = {});
     void stop();  // immediate
     bool running() const { return msg_ != nullptr; }
+    std::wstring lastApp() const { return lastApp_; }  // exe of the app the user last worked in (not ours)
+    std::vector<AppInfo> apps() const;                  // every app seen since start, newest verdict
+    // New rules (settings changed): drop overlays that no longer qualify, then look at all windows again.
+    void applyRules(EdgePoc::Rules rules);
 
 private:
     static LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM);
@@ -108,7 +141,10 @@ private:
     struct PidHooks {
         HWINEVENTHOOK hook[4]{};
         int refs = 0;
+        HANDLE process = nullptr, wait = nullptr;  // one wait per process (Edge sends no DESTROY when it exits)
+        void* waitCtx = nullptr;
     };
+    static void freePidWait(PidHooks& p);
     HINSTANCE inst_ = nullptr;
     HWND msg_ = nullptr;  // message-only window: new-window candidates, reaping, retry timer
     std::wstring title_;
@@ -116,6 +152,10 @@ private:
     std::unordered_map<HWND, std::unique_ptr<EdgePoc>> overlays_;
     std::unordered_map<DWORD, PidHooks> pidHooks_;
     std::unordered_map<HWND, int> retries_;  // fresh windows without caption-button bounds yet
+    std::unordered_map<HWND, ULONGLONG> rejected_;  // windows judged not coverable (tick): not re-probed for 60 s; bounded
+    std::wstring lastApp_;
+    std::unordered_map<std::wstring, AppInfo> seen_;  // by exe; at most 512
+    void noteApp(const EdgePoc::Cover& c);
     HWINEVENTHOOK showHook_ = nullptr, foregroundHook_ = nullptr, reorderHook_ = nullptr;
 };
 

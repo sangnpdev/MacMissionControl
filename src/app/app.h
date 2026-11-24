@@ -16,6 +16,7 @@
 #include <set>
 
 #include "app/edge_poc.h"
+#include "app/settings_window.h"
 #include "ui/layout.h"
 #include "ui/traffic_lights.h"
 #include "window/window_filter.h"
@@ -32,6 +33,7 @@ struct Options {
     std::wstring configPath;    // empty = %LOCALAPPDATA%\MissionControl\config.json
     int benchSeconds = 0;       // >0: stop the benchmark after this many seconds (soak)
     bool noTakeover = false;    // leave Win+Tab to Windows regardless of config
+    bool settings = false;      // open the settings window at startup
     bool hookAcceptInjected = false;  // tests only: let synthetic Win+Tab trigger the hook
 };
 
@@ -40,6 +42,7 @@ public:
     // Sent by a second instance (`--desktop ...`) to the running one. wParam: kDesktopNext,
     // kDesktopPrev, kDesktopNew, or a 1-based desktop number.
     static constexpr UINT kMsgDesktopCommand = WM_APP + 11;
+    static constexpr UINT kMsgOpenSettings = WM_APP + 12;  // `MissionControl.exe --settings` on a running instance
     static constexpr WPARAM kDesktopNext = 1000, kDesktopPrev = 1001, kDesktopNew = 1002;
 
     int run(HINSTANCE inst, const Options& opt);
@@ -75,7 +78,11 @@ private:
     void startCompositor();
     void trimWorkingSet();
     void loadConfig();
-    EdgePoc::Rules overlayRules() const;
+    EdgePoc::Rules overlayRules() const;  // config + the user's own settings (apps.json)
+    void loadUserApps();
+    bool saveUserApps() const;
+    void openSettings();
+    void setOverlaysRunning(bool on);
     void collectBenchSamples();
     void writeBenchCsv();
 
@@ -108,6 +115,8 @@ private:
     AnimationConfig cfg_;
     WindowFilterRules rules_;
     LayoutParams layout_;
+    RegistryData userApps_;           // changed from the tray menu, saved to %LOCALAPPDATA%\MissionControl\apps.json
+    SettingsWindow settings_;
     EdgeOverlays edgeOverlays_;       // experimental, off unless enabled in config or the tray menu
     std::map<HWND, Rect> lastSlots_;  // screen coordinates; keeps cards in place when windows come and go
     WindowManager wm_;

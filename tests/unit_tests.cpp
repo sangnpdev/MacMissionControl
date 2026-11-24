@@ -12,6 +12,8 @@
 #include "app/autostart.h"
 #include "ui/layout.h"
 #include "ui/traffic_lights.h"
+#include "window/app_registry.h"
+#include "window/compat_engine.h"
 #include "window/titlebar_profile.h"
 #include "window/window_classifier.h"
 #include "window/window_filter.h"
@@ -394,6 +396,171 @@ TEST(profile_config_lists) {
     CHECK(!loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"extraApps":"mspaint.exe"}}})", d).empty());
     CHECK(!loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"excludeApps":[1]}}})", d).empty());
     CHECK(d.edgePocExtraApps.empty());  // a rejected file leaves the defaults
+}
+
+// ---------- Compatibility engine and application registry ----------
+static TitleBarFacts gfacts(const wchar_t* cls, const wchar_t* exe, bool sysmenu = true) {
+    TitleBarFacts f;
+    f.className = cls; f.exeName = exe;
+    f.hasCaption = true; f.hasSysMenu = sysmenu; f.captionBoundsOk = true;
+    return f;
+}
+
+TEST(engine_verified_profile_wins) {
+    Probe p;  // nothing found at all: a measured profile still applies
+    const auto a = assess(gfacts(L"CASCADIA_HOSTING_WINDOW_CLASS", L"WindowsTerminal.exe"), p);
+    CHECK(a.verdict == Verdict::Supported && a.source == StripSource::Verified && a.heightLogical == 40.0);   // measured 46x40
+    CHECK(assess(gfacts(L"CabinetWClass", L"explorer.exe"), p).source == StripSource::Verified);
+}
+
+TEST(engine_combines_sources_for_unknown_apps) {
+    TitleBarFacts f = gfacts(L"SomeFramework", L"unknown.exe");
+    Probe p; p.dwm = {true, 146, 30}; p.hit = {true, 140, 21};          // classic hit-test inside the DWM bounds (mc_testwin)
+    auto a = assess(f, p);
+    CHECK(a.verdict == Verdict::Supported && a.source == StripSource::Combined && a.heightLogical == 0.0);
+    p.hit = {true, 143, 40};                                             // app draws taller buttons than the bounds say
+    a = assess(f, p);
+    CHECK(a.verdict == Verdict::Supported && a.heightLogical == 40.0);
+    p.dwm = {};                                                          // VS Code / UWP: Windows reports no bounds
+    a = assess(f, p);
+    CHECK(a.verdict == Verdict::Supported && a.source == StripSource::HitTest && a.useHit && a.hitHeight == 40.0);
+    p.hit = {}; p.dwm = {true, 146, 30};                                 // only DWM bounds: covered but Partial
+    a = assess(f, p);
+    CHECK(a.verdict == Verdict::Partial && a.source == StripSource::DwmBounds && a.covers());
+    p.dwm = {};
+    CHECK(assess(f, p).verdict == Verdict::Unsupported && !assess(f, p).covers());
+}
+
+TEST(engine_hard_exclusions) {
+    Probe p; p.dwm = {true, 146, 30}; p.hit = {true, 140, 30};
+    CHECK(assess(gfacts(L"Windows.UI.Core.CoreWindow", L"SearchHost.exe"), p).verdict == Verdict::Excluded);
+    TitleBarFacts f = gfacts(L"X", L"app.exe"); f.hasCaption = false;    // fullscreen / borderless game window
+    CHECK(assess(f, p).verdict == Verdict::Unsupported);
+    f = gfacts(L"X", L"app.exe"); f.cloaked = true;
+    CHECK(!assess(f, p).covers());
+    CHECK(assess(gfacts(L"X", L""), p).verdict == Verdict::Unsupported);
+}
+
+TEST(registry_priority_window_over_app_over_default) {
+    RegistryData d;
+    d.apps[L"app.exe"].enabled = false;
+    d.windows.push_back({L"app.exe", L"Dialog", L"", true});
+    CHECK(!resolvePolicy(d, L"APP.EXE", L"Main", L"x").enabled.value());       // application setting
+    CHECK(resolvePolicy(d, L"app.exe", L"Dialog", L"x").enabled.value());      // window rule wins
+    CHECK(!resolvePolicy(d, L"other.exe", L"Main", L"x").enabled.has_value()); // global default: no opinion
+    d.windows.push_back({L"app.exe", L"", L"secret", false});
+    CHECK(resolvePolicy(d, L"app.exe", L"Dialog", L"my secret").enabled.value());  // first matching rule wins
+    CHECK(!resolvePolicy(d, L"app.exe", L"Main", L"my secret").enabled.value());   // second rule matches by title
+}
+
+TEST(registry_decision_by_mode) {
+    Assessment verified; verified.verdict = Verdict::Supported; verified.source = StripSource::Verified;
+    Assessment detected; detected.verdict = Verdict::Supported; detected.source = StripSource::HitTest;
+    Assessment partial; partial.verdict = Verdict::Partial; partial.source = StripSource::DwmBounds;
+    Assessment none;
+    Policy def, off, on;
+    off.enabled = false; on.enabled = true;
+    CHECK(decide(verified, def, CoverMode::AllCompatible).cover && decide(detected, def, CoverMode::AllCompatible).cover && decide(partial, def, CoverMode::AllCompatible).cover);
+    CHECK(!decide(none, def, CoverMode::AllCompatible).cover);                 // unsupported: native buttons stay
+    CHECK(!decide(none, on, CoverMode::AllCompatible).cover);                  // opting in never forces an unsupported window
+    CHECK(!decide(verified, off, CoverMode::AllCompatible).cover);             // excluded by the user
+    CHECK(decide(verified, def, CoverMode::VerifiedOnly).cover);
+    CHECK(!decide(detected, def, CoverMode::VerifiedOnly).cover && !decide(partial, def, CoverMode::VerifiedOnly).cover);
+    CHECK(decide(partial, on, CoverMode::VerifiedOnly).cover);                 // explicit opt-in
+}
+
+TEST(registry_json_roundtrip_and_errors) {
+    RegistryData d;
+    d.mode = CoverMode::VerifiedOnly;
+    d.apps[L"code.exe"].enabled = false;
+    d.apps[L"x.exe"].heightLogical = 36;
+    d.windows.push_back({L"app.exe", L"Cls", L"ti\"tle \u00e9", false});
+    const std::string text = toJson(d);
+    auto parsed = json::parse(text);
+    CHECK(parsed.value.has_value());
+    RegistryData back; std::vector<std::string> errs;
+    parseRegistry(*parsed.value, "r", back, errs);
+    CHECK(errs.empty());
+    CHECK(back.mode == CoverMode::VerifiedOnly && back.apps.size() == 2 && back.windows.size() == 1);
+    CHECK(back.apps[L"code.exe"].enabled.value() == false && back.apps[L"x.exe"].heightLogical.value() == 36);
+    CHECK(back.windows[0] == d.windows[0]);
+    for (const char* bad : {R"({"mode":"x"})", R"({"apps":{"a.exe":{"enabled":1}}})", R"({"apps":{"a.exe":{"height":500}}})",
+                            R"({"windows":[{"class":"c"}]})", R"({"windows":{"exe":"a"}})", R"({"zzz":1})"}) {
+        RegistryData r; std::vector<std::string> e;
+        auto pr = json::parse(bad);
+        CHECK(pr.value.has_value());
+        parseRegistry(*pr.value, "r", r, e);
+        CHECK(!e.empty());
+    }
+}
+
+TEST(registry_config_keys) {
+    AnimationConfig c;
+    CHECK(loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"enabled":true,"mode":"verifiedOnly","apps":{"Code.EXE":{"enabled":false}}}}})", c).empty());
+    CHECK(c.edgePocRegistry.mode == CoverMode::VerifiedOnly && c.edgePocRegistry.apps.count(L"code.exe") == 1);   // names are case-insensitive
+    AnimationConfig d;
+    CHECK(!loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"apps":{"a.exe":{"nope":1}}}}})", d).empty());
+}
+
+TEST(registry_toggle_semantics) {
+    RegistryData d;
+    setAppOn(d, L"A.exe", false, true);                         // turn off an app that is covered by default
+    CHECK(isExcludedApp(d, L"a.exe") && !isCustomApp(d, L"a.exe"));
+    setAppOn(d, L"a.exe", true, true);                          // back on: the default already covers, so the entry disappears
+    CHECK(d.apps.empty());
+    setAppOn(d, L"b.exe", true, false);                         // an app the default would not cover: explicit opt-in
+    CHECK(isCustomApp(d, L"B.EXE"));
+    d.apps[L"b.exe"].heightLogical = 36;
+    setAppOn(d, L"b.exe", false, false);
+    setAppOn(d, L"b.exe", true, true);                          // the custom height survives the on/off cycle
+    CHECK(d.apps.count(L"b.exe") == 1 && d.apps[L"b.exe"].heightLogical.value() == 36 && !d.apps[L"b.exe"].enabled);
+    resetApp(d, L"B.exe");
+    CHECK(d.apps.empty());
+}
+
+TEST(registry_feature_flag_roundtrip) {
+    RegistryData d;
+    d.featureEnabled = true;
+    auto parsed = json::parse(toJson(d));
+    CHECK(parsed.value.has_value());
+    RegistryData back; std::vector<std::string> errs;
+    parseRegistry(*parsed.value, "r", back, errs);
+    CHECK(errs.empty() && back.featureEnabled.has_value() && *back.featureEnabled);
+    RegistryData none; auto p2 = json::parse(toJson(none));
+    parseRegistry(*p2.value, "r", none, errs);
+    CHECK(!none.featureEnabled.has_value());                    // unset stays unset: the config file decides
+}
+
+TEST(registry_listed_apps_mode) {
+    Assessment detected; detected.verdict = Verdict::Supported; detected.source = StripSource::HitTest;
+    Assessment none;
+    Policy def, on; on.enabled = true;
+    CHECK(RegistryData{}.mode == CoverMode::ListedApps);                                       // the default
+    CHECK(isListedApp(L"Code.exe") && isListedApp(L"Docker Desktop.exe") && isListedApp(L"MICROSOFT.MEDIA.PLAYER.EXE"));
+    CHECK(!isListedApp(L"slack.exe"));
+    CHECK(decide(detected, def, CoverMode::ListedApps, true).cover);                          // listed and compatible
+    CHECK(!decide(detected, def, CoverMode::ListedApps, false).cover);                        // compatible but not listed
+    CHECK(decide(detected, on, CoverMode::ListedApps, false).cover);                          // added by the user
+    CHECK(!decide(none, def, CoverMode::ListedApps, true).cover);                             // listed but unsupported: native stays
+    AnimationConfig c;
+    CHECK(loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"mode":"listedApps"}}})", c).empty());
+    CHECK(c.edgePocRegistry.mode == CoverMode::ListedApps);
+}
+
+TEST(profile_fixed_strips_for_apps_that_report_nothing) {
+    TitleBarFacts f;
+    f.className = L"Chrome_WidgetWin_1"; f.exeName = L"Zalo.exe"; f.hasCaption = true;  // no WS_SYSMENU, no caption bounds
+    auto p = stripProfileFor(f, {}, {});
+    CHECK(p.coverable && p.fixedStrip && p.leftFromRight == 157 && p.heightLogical == 24);
+    Probe none;
+    const auto a = assess(f, none);
+    CHECK(a.verdict == Verdict::Supported && a.source == StripSource::Verified && a.useFixed && a.fixedLeftFromRight == 157);
+    f.exeName = L"Docker Desktop.exe";
+    CHECK(stripProfileFor(f, {}, {}).fixedStrip && stripProfileFor(f, {}, {}).rightGap == 10);
+    f.className = L"Other";                                            // same exe, another window class: no profile
+    CHECK(!stripProfileFor(f, {}, {}).coverable);
+    f.exeName = L"warp.exe"; f.className = L"Window Class";
+    CHECK(stripProfileFor(f, {}, {}).heightLogical == 35);
 }
 
 // ---------- Window filter ----------

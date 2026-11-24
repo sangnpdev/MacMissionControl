@@ -64,7 +64,10 @@ int App::run(HINSTANCE inst, const Options& opt) {
     }
 
     if (desktops_.init()) desktopState_ = desktops_.read();
-    if (cfg_.edgePocEnabled && opt_.benchCycles == 0) edgeOverlays_.start(inst, widen(cfg_.edgePocTitle), overlayRules());
+    loadUserApps();
+    // The user's own switch (settings window / tray) wins over config.json.
+    if (userApps_.featureEnabled.value_or(cfg_.edgePocEnabled) && opt_.benchCycles == 0) edgeOverlays_.start(inst, widen(cfg_.edgePocTitle), overlayRules());
+    if (opt_.settings) openSettings();
 
     benchStart_ = GetTickCount64();
     if (opt_.benchCycles > 0 || opt_.show) open();
@@ -81,6 +84,7 @@ int App::run(HINSTANCE inst, const Options& opt) {
         bool quit = false;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) { quit = true; break; }
+            if (settings_.preTranslate(&msg)) continue;  // Tab / Esc inside the settings window
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -89,6 +93,7 @@ int App::run(HINSTANCE inst, const Options& opt) {
 
     // Shutdown order: keyboard hook (Win+Tab back to Windows first) -> compositor (thumbnails, GPU) -> hooks.
     // The overlay is already destroyed.
+    settings_.close();
     edgeOverlays_.stop();
     hook_.stop();
     comp_.stop();
@@ -169,9 +174,69 @@ void App::refreshWindows() {
 
 EdgePoc::Rules App::overlayRules() const {
     EdgePoc::Rules r;
-    for (const auto& e : cfg_.edgePocExtraApps) r.extraExes.push_back(widen(e));
-    for (const auto& e : cfg_.edgePocExcludeApps) r.excludeExes.push_back(widen(e));
+    r.data = cfg_.edgePocRegistry;
+    // The older lists in config.json: opt in / out by exe name (an explicit "apps" entry wins).
+    for (const auto& e : cfg_.edgePocExtraApps) r.data.apps.try_emplace(lowerExe(widen(e))).first->second.enabled.emplace(true);
+    for (const auto& e : cfg_.edgePocExcludeApps) r.data.apps[lowerExe(widen(e))].enabled = false;
+    // The user's own choices (tray menu) win over the config file.
+    for (const auto& [exe, s] : userApps_.apps) r.data.apps[exe] = s;
+    for (const auto& w : userApps_.windows) r.data.windows.push_back(w);
+    r.data.mode = userApps_.mode;
     return r;
+}
+
+void App::loadUserApps() {
+    userApps_ = {};
+    userApps_.mode = cfg_.edgePocRegistry.mode;  // until the user changes it, the config file decides
+    const std::wstring path = log::directory() + L"\\apps.json";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") || !f) return;
+    std::string text;
+    char buf[4096];
+    for (std::size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) text.append(buf, n);
+    fclose(f);
+    const auto parsed = json::parse(text);
+    std::vector<std::string> errs;
+    RegistryData d = userApps_;
+    if (parsed.value) parseRegistry(*parsed.value, "apps.json", d, errs);
+    else errs.push_back("apps.json is not valid JSON: " + parsed.error);
+    for (const auto& e : errs) log::write("apps.json: %s", e.c_str());
+    if (errs.empty()) userApps_ = std::move(d);  // a file with any error is ignored as a whole, like config.json
+}
+
+bool App::saveUserApps() const {
+    const std::wstring path = log::directory() + L"\\apps.json", tmp = path + L".tmp";
+    const std::string text = toJson(userApps_);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, tmp.c_str(), L"wb") || !f) return false;
+    const bool wrote = fwrite(text.data(), 1, text.size(), f) == text.size();
+    fclose(f);
+    if (!wrote || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {  // replace atomically
+        DeleteFileW(tmp.c_str());
+        log::write("apps.json could not be saved");
+        return false;
+    }
+    return true;
+}
+
+void App::setOverlaysRunning(bool on) {
+    userApps_.featureEnabled = on;
+    saveUserApps();
+    if (on) edgeOverlays_.start(GetModuleHandleW(nullptr), widen(cfg_.edgePocTitle), overlayRules());
+    else edgeOverlays_.stop();
+}
+
+void App::openSettings() {
+    SettingsHost host;
+    host.detected = [this] { return edgeOverlays_.apps(); };
+    host.user = [this]() -> RegistryData& { return userApps_; };
+    host.running = [this] { return edgeOverlays_.running(); };
+    host.setRunning = [this](bool on) { setOverlaysRunning(on); };
+    host.changed = [this] {
+        saveUserApps();
+        edgeOverlays_.applyRules(overlayRules());  // takes effect at once, only the overlays that change
+    };
+    settings_.show(GetModuleHandleW(nullptr), std::move(host));
 }
 
 void App::loadConfig() {
@@ -462,7 +527,7 @@ LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void App::showTrayMenu(int x, int y) {
-    enum : UINT { kOpen = 1, kAutostart, kEdgePoc, kQuit };
+    enum : UINT { kOpen = 1, kAutostart, kEdgePoc, kEdgeOff, kEdgeVerifiedOnly, kQuit, kSettings, kEdgeOnBase = 100 };
     const autostart::State as = autostart::state();
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, kOpen, L"Open Mission Control\tWin+Tab");
@@ -473,6 +538,23 @@ void App::showTrayMenu(int x, int y) {
     else
         AppendMenuW(menu, MF_STRING | (as == autostart::State::On ? MF_CHECKED : 0), kAutostart, L"Start with Windows");
     AppendMenuW(menu, MF_STRING | (edgeOverlays_.running() ? MF_CHECKED : 0), kEdgePoc, L"Traffic lights on app windows (experimental)");
+    AppendMenuW(menu, MF_STRING, kSettings, L"    Traffic lights settings...");
+    std::vector<std::wstring> offApps;  // apps the user turned off from here: a click turns them back on
+    if (edgeOverlays_.running()) {
+        const std::wstring last = edgeOverlays_.lastApp();
+        const auto eff = overlayRules().data.apps;
+        const auto it = eff.find(last);
+        if (!last.empty() && !(it != eff.end() && it->second.enabled && !*it->second.enabled))
+            AppendMenuW(menu, MF_STRING, kEdgeOff, (L"    Turn off for " + last).c_str());
+        for (const auto& [exe, s] : userApps_.apps)
+            if (s.enabled && !*s.enabled) offApps.push_back(exe);
+        if (!offApps.empty()) {
+            HMENU sub = CreatePopupMenu();
+            for (std::size_t i = 0; i < offApps.size() && i < 50; ++i) AppendMenuW(sub, MF_STRING, kEdgeOnBase + UINT(i), (L"Turn on for " + offApps[i]).c_str());
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), L"    Turned-off apps");
+        }
+        AppendMenuW(menu, MF_STRING | (userApps_.mode == CoverMode::VerifiedOnly ? MF_CHECKED : 0), kEdgeVerifiedOnly, L"    Only apps with a measured profile");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kQuit, L"Quit");
     SetForegroundWindow(overlay_);  // required so the menu closes when the user clicks elsewhere
@@ -490,11 +572,35 @@ void App::showTrayMenu(int x, int y) {
         else autostart::enable();
         break;
     case kEdgePoc:
-        if (edgeOverlays_.running()) edgeOverlays_.stop();
-        else edgeOverlays_.start(GetModuleHandleW(nullptr), widen(cfg_.edgePocTitle), overlayRules());
+        setOverlaysRunning(!edgeOverlays_.running());
+        break;
+    case kSettings:
+        openSettings();
+        break;
+    case kEdgeOff: {
+        userApps_.apps[edgeOverlays_.lastApp()].enabled = false;
+        saveUserApps();
+        edgeOverlays_.applyRules(overlayRules());
+        break;
+    }
+    case kEdgeVerifiedOnly:
+        userApps_.mode = userApps_.mode == CoverMode::VerifiedOnly ? CoverMode::AllCompatible : CoverMode::VerifiedOnly;
+        saveUserApps();
+        edgeOverlays_.applyRules(overlayRules());
         break;
     case kQuit:
         DestroyWindow(overlay_);
+        break;
+    default:
+        if (cmd >= kEdgeOnBase && cmd - kEdgeOnBase < offApps.size()) {
+            const std::wstring exe = offApps[cmd - kEdgeOnBase];
+            const auto& cfgApps = cfg_.edgePocRegistry.apps;
+            const auto c = cfgApps.find(exe);
+            if (c != cfgApps.end() && c->second.enabled && !*c->second.enabled) userApps_.apps[exe].enabled = true;  // config says off: override
+            else userApps_.apps.erase(exe);
+            saveUserApps();
+            edgeOverlays_.applyRules(overlayRules());
+        }
         break;
     }
 }
@@ -565,6 +671,9 @@ LRESULT App::onMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_SETTINGCHANGE:
         if (wp == SPI_SETDESKWALLPAPER && state_ == State::Idle) comp_.prepare(backdrops());
+        return 0;
+    case kMsgOpenSettings:
+        openSettings();
         return 0;
     case kMsgDesktopCommand:
         log::write("desktop command %llu", static_cast<unsigned long long>(wp));

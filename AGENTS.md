@@ -9,10 +9,12 @@ Read `docs/architecture/system-design.md` and `docs/decisions/` before changing 
   Do not call DWM thumbnail or DComp APIs from the UI thread.
 - **No idle work.** The compositor thread blocks on an event while idle. Do not add timers,
   polling or a capture loop. Window changes come from `SetWinEventHook`, only while the overview
-  is open. The one opt-in exception is the experimental traffic lights on windows of verified apps (Edge, Chrome,
-  Explorer, Notepad, plus `extraApps` from config; `src/app/edge_poc.cpp`, off by default): while enabled it keeps a global
-  show hook (filtered by `WS_CAPTION`), a global foreground hook and per-target-process hooks; the system-wide `EVENT_OBJECT_REORDER` hook (about 20 events/s while
-  idle) is only on for 2.5 s after an Edge window appears or is activated. Keep it that way.
+  is open. The one opt-in exception is the experimental traffic lights on app windows
+  (`src/app/edge_poc.cpp`, off by default, ADR-008): while enabled it keeps a global show hook (filtered by `WS_CAPTION`),
+  a global foreground hook and per-target-process hooks with one process wait per process; the system-wide
+  `EVENT_OBJECT_REORDER` hook (about 20 events/s while idle) exists only while an overlay that could not be made an owned
+  window exists (UWP frames) and only for 2.5 s after a window appears or is activated. Keep it that way. The probe sends
+  `WM_NCHITTEST` with a timeout, once per window; never to excluded, elevated or own windows.
 - **One animation engine.** Animate through `mc::anim` (time-based, closed form). Do not add
   per-frame integration or a second animation system for chrome.
 - **Physical pixels everywhere.** The process is Per-Monitor-V2 aware (`resources/app.manifest`).

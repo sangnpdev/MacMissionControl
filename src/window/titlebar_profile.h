@@ -14,6 +14,11 @@ struct StripProfile {
     // Height of the native button strip in logical px (96 DPI). 0 = trust DWMWA_CAPTION_BUTTON_BOUNDS,
     // which is exact for frames drawn by Windows (measured on Explorer and Notepad).
     double heightLogical = 0.0;
+    // Fixed strip for apps that report nothing (no caption bounds, no hit-test): measured position of the native buttons,
+    // relative to the frame's right and top edges, logical px.
+    bool fixedStrip = false;
+    double leftFromRight = 0.0;  // frame right edge to the left edge of the strip
+    double rightGap = 0.0;       // frame right edge to the right edge of the strip
     const char* why = "";
 };
 

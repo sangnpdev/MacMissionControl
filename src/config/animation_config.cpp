@@ -178,11 +178,16 @@ std::vector<std::string> loadAnimationConfig(std::string_view jsonText, Animatio
         r.number(*v, "trafficLights", "spacing", c.trafficSpacing);
     }
     if (auto* g = root.find("globalTrafficLights"); r.object(g, "globalTrafficLights", {"experimentalOverlay"})) {
-        if (auto* v = g->find("experimentalOverlay"); r.object(v, "globalTrafficLights.experimentalOverlay", {"enabled", "titleContains", "extraApps", "excludeApps"})) {
+        if (auto* v = g->find("experimentalOverlay"); r.object(v, "globalTrafficLights.experimentalOverlay", {"enabled", "titleContains", "extraApps", "excludeApps", "mode", "apps", "windows"})) {
             r.boolean(*v, "globalTrafficLights.experimentalOverlay", "enabled", c.edgePocEnabled);
             r.text(*v, "globalTrafficLights.experimentalOverlay", "titleContains", c.edgePocTitle);
             r.textList(*v, "globalTrafficLights.experimentalOverlay", "extraApps", c.edgePocExtraApps);
             r.textList(*v, "globalTrafficLights.experimentalOverlay", "excludeApps", c.edgePocExcludeApps);
+            json::Value reg;  // only the registry keys go to the registry parser
+            reg.type = json::Value::Type::Object;
+            for (auto& [k, val] : v->object)
+                if (k == "mode" || k == "apps" || k == "windows") reg.object.emplace_back(k, val);
+            parseRegistry(reg, "globalTrafficLights.experimentalOverlay", c.edgePocRegistry, errs);
         }
     }
     if (auto* v = root.find("desktopTransition"); r.object(v, "desktopTransition", {"duration", "easing", "parallax"})) {

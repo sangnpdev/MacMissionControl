@@ -62,6 +62,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     for (int i = 1; argv && i < argc; ++i) {
         const std::wstring a = argv[i];
         if (a == L"--show") opt.show = true;
+        else if (a == L"--settings") opt.settings = true;
         else if (a == L"--probe-hotkeys") probe = true;
         else if (a == L"--no-trim") opt.noTrim = true;
         else if (a == L"--no-takeover") opt.noTakeover = true;
@@ -100,6 +101,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             GetWindowThreadProcessId(other, &pid);
             AllowSetForegroundWindow(pid);  // pass our foreground right so the overlay can take focus
             if (quit) PostMessageW(other, WM_CLOSE, 0, 0);
+            else if (opt.settings) PostMessageW(other, mc::App::kMsgOpenSettings, 0, 0);
             else if (desktopCmd) PostMessageW(other, mc::App::kMsgDesktopCommand, desktopCmd, 0);
             else PostMessageW(other, WM_HOTKEY, 1, 0);
         }

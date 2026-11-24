@@ -23,6 +23,8 @@ add_library(mc_core STATIC
   src/window/window_filter.cpp
   src/window/window_classifier.cpp
   src/window/titlebar_profile.cpp
+  src/window/compat_engine.cpp
+  src/window/app_registry.cpp
   src/config/animation_config.cpp)
 target_include_directories(mc_core PUBLIC src)
 
@@ -42,9 +44,10 @@ add_executable(MissionControl WIN32
   src/app/autostart.cpp
   src/app/tray.cpp
   src/app/edge_poc.cpp
+  src/app/settings_window.cpp
   resources/version.rc
   resources/app.manifest)
-target_link_libraries(MissionControl PRIVATE mc_core dwmapi dcomp d3d11 d2d1 dwrite windowscodecs dxgi dxguid dbghelp ole32 shell32 shcore user32)
+target_link_libraries(MissionControl PRIVATE mc_core dwmapi dcomp d3d11 d2d1 dwrite windowscodecs dxgi dxguid dbghelp ole32 shell32 shcore user32 comctl32 comdlg32 version)
 target_compile_definitions(MissionControl PRIVATE MC_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} MC_VERSION_MINOR=${PROJECT_VERSION_MINOR} MC_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 
 # Benchmark helper: creates N plain top-level windows of class MCBenchWindow.

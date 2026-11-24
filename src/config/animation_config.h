@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "animation/animation.h"
+#include "window/app_registry.h"
 
 namespace mc {
 
@@ -36,6 +37,7 @@ struct AnimationConfig {
     std::string edgePocTitle;
     std::vector<std::string> edgePocExtraApps;    // exe names with a Windows-drawn frame to opt in (e.g. "mspaint.exe")
     std::vector<std::string> edgePocExcludeApps;  // exe names never covered
+    RegistryData edgePocRegistry;                 // mode, per-app and per-window settings (see app_registry.h)
     // Desktop switch (Phase 3 UI; used by the demo now).
     double desktopDuration = 0.45;   // s
     anim::CubicBezier desktopEasing = anim::easing::emphasized;
