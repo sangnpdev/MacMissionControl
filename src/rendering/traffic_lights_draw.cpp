@@ -23,17 +23,20 @@ void drawTrafficCircles(ID2D1RenderTarget* rt, ID2D1Factory* factory, const Traf
     rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.6f), &glyph);
     if (!fill || !rim || !glyph) return;
     float groupHover = 0.f;
-    for (int i = 0; i < 3; ++i) groupHover = std::max(groupHover, look[i].hover);  // glyphs show on all three, like macOS
+    for (int i = 0; i < 3; ++i)
+        if (!look[i].disabled) groupHover = std::max(groupHover, look[i].hover);  // glyphs show on all three, like macOS
     groupHover *= 1.f - inactive;
     const float sw = std::max(1.f, 1.3f * dpiScale);
     for (int i = 0; i < 3; ++i) {
         const Rect& c = tl.circle[i];
         const float cx = float(c.cx() - originX), cy = float(c.cy() - originY), d = float(c.w);
         const float r = d / 2 * (1.f + 0.08f * look[i].hover * (1.f - inactive));
-        fill->SetColor(mix(mix(colors[i], grey, inactive), black, 0.22f * look[i].pressed));
+        D2D1_COLOR_F col = mix(mix(colors[i], grey, inactive), black, 0.22f * look[i].pressed);
+        if (look[i].disabled) col = D2D1::ColorF(0.62f, 0.62f, 0.62f, 0.45f);  // like macOS: a dim grey dot
+        fill->SetColor(col);
         rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), fill.Get());
         rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r - 0.5f, r - 0.5f), rim.Get(), 1.f);
-        if (groupHover <= 0.01f) continue;
+        if (groupHover <= 0.01f || look[i].disabled) continue;
         glyph->SetOpacity(groupHover);
         const float q = d * 0.24f;
         if (i == 0) {

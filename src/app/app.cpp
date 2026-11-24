@@ -64,7 +64,7 @@ int App::run(HINSTANCE inst, const Options& opt) {
     }
 
     if (desktops_.init()) desktopState_ = desktops_.read();
-    if (cfg_.edgePocEnabled && opt_.benchCycles == 0) edgeOverlays_.start(inst, widen(cfg_.edgePocTitle));
+    if (cfg_.edgePocEnabled && opt_.benchCycles == 0) edgeOverlays_.start(inst, widen(cfg_.edgePocTitle), overlayRules());
 
     benchStart_ = GetTickCount64();
     if (opt_.benchCycles > 0 || opt_.show) open();
@@ -165,6 +165,13 @@ void App::refreshWindows() {
     const int dir = GetTickCount64() < slideUntil_ ? slideDir_ : 0;
     log::write("windows changed while open: %zu now, slide %d", windows_.size(), dir);
     comp_.relayout(plan(), dir);
+}
+
+EdgePoc::Rules App::overlayRules() const {
+    EdgePoc::Rules r;
+    for (const auto& e : cfg_.edgePocExtraApps) r.extraExes.push_back(widen(e));
+    for (const auto& e : cfg_.edgePocExcludeApps) r.excludeExes.push_back(widen(e));
+    return r;
 }
 
 void App::loadConfig() {
@@ -465,7 +472,7 @@ void App::showTrayMenu(int x, int y) {
         AppendMenuW(menu, MF_STRING, kAutostart, L"Start with Windows (turned off in Settings › Startup apps)…");
     else
         AppendMenuW(menu, MF_STRING | (as == autostart::State::On ? MF_CHECKED : 0), kAutostart, L"Start with Windows");
-    AppendMenuW(menu, MF_STRING | (edgeOverlays_.running() ? MF_CHECKED : 0), kEdgePoc, L"Edge traffic lights (experimental)");
+    AppendMenuW(menu, MF_STRING | (edgeOverlays_.running() ? MF_CHECKED : 0), kEdgePoc, L"Traffic lights on app windows (experimental)");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kQuit, L"Quit");
     SetForegroundWindow(overlay_);  // required so the menu closes when the user clicks elsewhere
@@ -484,7 +491,7 @@ void App::showTrayMenu(int x, int y) {
         break;
     case kEdgePoc:
         if (edgeOverlays_.running()) edgeOverlays_.stop();
-        else edgeOverlays_.start(GetModuleHandleW(nullptr), widen(cfg_.edgePocTitle));
+        else edgeOverlays_.start(GetModuleHandleW(nullptr), widen(cfg_.edgePocTitle), overlayRules());
         break;
     case kQuit:
         DestroyWindow(overlay_);

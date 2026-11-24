@@ -11,6 +11,7 @@
 
 #include "diagnostics/log.h"
 #include "rendering/traffic_lights_draw.h"
+#include "window/titlebar_profile.h"
 #include "window/window_classifier.h"
 
 namespace mc {
@@ -81,32 +82,53 @@ double EdgePoc::now() const {
     return double(c.QuadPart) / double(qpcFreq_.QuadPart);
 }
 
-bool EdgePoc::isEdgeWindow(HWND h, bool* maybeLater) {
+// Windows refuses WM_CLOSE / WM_SYSCOMMAND from a lower-integrity process, so elevated windows are skipped.
+// Failing to open the token is treated the same way (it fails for higher-integrity processes).
+static bool tokenReadable(DWORD pid) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return false;
+    HANDLE t = nullptr;
+    const bool ok = OpenProcessToken(p, TOKEN_QUERY, &t) != 0;
+    if (t) CloseHandle(t);
+    CloseHandle(p);
+    return ok;
+}
+
+bool EdgePoc::coverable(HWND h, const Rules& rules, double* heightLogical, bool* maybeLater) {
     if (maybeLater) *maybeLater = false;
-    if (!IsWindowVisible(h)) return false;
-    wchar_t cls[64];
-    GetClassNameW(h, cls, 64);
-    if (wcscmp(cls, L"Chrome_WidgetWin_1") != 0) return false;
+    if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) || GetParent(h)) return false;  // unowned top-level windows only
+    if (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return false;
     DWORD pid = 0;
     GetWindowThreadProcessId(h, &pid);
+    if (pid == GetCurrentProcessId()) return false;  // never our own windows (the overview)
+    wchar_t cls[64];
+    GetClassNameW(h, cls, 64);
     TitleBarFacts facts;
     facts.className = cls;
     facts.exeName = exeNameOf(pid);
     const LONG_PTR st = GetWindowLongPtrW(h, GWL_STYLE);
     facts.hasCaption = (st & WS_CAPTION) == WS_CAPTION;
     facts.hasSysMenu = (st & WS_SYSMENU) != 0;
+    BOOL cloaked = FALSE;
+    DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked);
+    facts.cloaked = cloaked != 0;
     RECT cb{};
-    facts.captionBoundsOk = SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CAPTION_BUTTON_BOUNDS, &cb, sizeof cb)) && cb.right > cb.left;
-    if (classifyTitleBar(facts).kind != TitleBarKind::Edge) return false;
-    if (!facts.captionBoundsOk) {
-        if (maybeLater) *maybeLater = true;
+    const bool bounds = SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CAPTION_BUTTON_BOUNDS, &cb, sizeof cb)) && cb.right > cb.left;
+    facts.captionBoundsOk = bounds;
+    StripProfile p = stripProfileFor(facts, rules.extraExes, rules.excludeExes);
+    if (!p.coverable && !bounds) {  // would it qualify with bounds? then a fresh window may just not be laid out yet
+        facts.captionBoundsOk = true;
+        if (stripProfileFor(facts, rules.extraExes, rules.excludeExes).coverable && maybeLater) *maybeLater = true;
         return false;
     }
+    if (!p.coverable || !tokenReadable(pid)) return false;
+    if (heightLogical) *heightLogical = p.heightLogical;
     return true;
 }
 
-bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner) {
+bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner, double heightLogical) {
     if (running() || !target) return false;
+    heightLogical_ = heightLogical;
     QueryPerformanceFrequency(&qpcFreq_);
     inst_ = inst;
     target_ = target;
@@ -144,8 +166,7 @@ bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner) {
                                     overlay_, INFINITE, WT_EXECUTEONLYONCE);  // pool thread only posts a message
     active_ = GetForegroundWindow() == target_;
     inactive_.jump(active_ ? 0.0 : 1.0);
-    sampleColor();
-    place();
+    place();  // also schedules the color samples
     log::write("edge overlay: attached to %p", static_cast<void*>(target_));
     return true;
 }
@@ -198,11 +219,10 @@ void EdgePoc::scheduleColorSamples() {
 }
 
 void EdgePoc::sampleColor() {
-    RECT cb{}, wr{};
-    if (!IsWindow(target_) || FAILED(DwmGetWindowAttribute(target_, DWMWA_CAPTION_BUTTON_BOUNDS, &cb, sizeof cb)) || !GetWindowRect(target_, &wr)) return;
-    const float dpi = float(GetDpiForWindow(target_)) / 96.f;
+    if (rect_.empty() || !IsWindow(target_)) return;
+    // The title bar right next to the strip, at its middle height.
     HDC screen = GetDC(nullptr);
-    const COLORREF c = GetPixel(screen, wr.left + cb.left - int(std::round(4 * dpi)), wr.top + std::max<LONG>(cb.top, 0) + (cb.bottom - cb.top) / 2);
+    const COLORREF c = GetPixel(screen, int(rect_.x - std::round(4 * dpi_)), int(rect_.cy()));
     ReleaseDC(nullptr, screen);
     if (c != CLR_INVALID) bg_ = c;
 }
@@ -234,19 +254,33 @@ void EdgePoc::place() {
     }
     DwmGetWindowAttribute(target_, DWMWA_EXTENDED_FRAME_BOUNDS, &ef, sizeof ef);
     // Exactly the native button strip, but never into the invisible resize border above the frame.
-    // Maximized: the window extends past the screen by the frame width and Edge draws its buttons from
-    // the visible top (measured: bounds say y 0..30, the glyphs sit 8 px lower), so keep the bounds' height from there.
+    // Maximized: the window extends past the screen by the frame width and the buttons start below that border
+    // (measured on Edge, Chrome, Explorer, Notepad: window top + 8 px at 96 DPI).
+    // Height: Windows-drawn frames match the DWM bounds. Chromium draws 40 logical px buttons while the bounds say
+    // 30 (measured with the hover highlight on Close), so its profile carries the real height.
+    const UINT dpiUi = GetDpiForWindow(target_);
     const bool zoomedNow = IsZoomed(target_) != 0;
-    // Height: measured with Edge's own hover highlight on the native Close button, the buttons are 40 logical px
-    // tall (39-40 px at 96 DPI, 78 at 192) while the bounds say 30; covering only the bounds left the lower part of
-    // the native buttons visible.
-    const LONG top = zoomedNow ? ef.top : std::max<LONG>(wr.top + cb.top, ef.top);
-    const LONG bottom = top + LONG(std::lround(40.0 * GetDpiForWindow(target_) / 96.0));
-    const Rect r{double(wr.left + cb.left), double(top), double(cb.right - cb.left), double(bottom - top)};
+    const LONG frame = LONG(GetSystemMetricsForDpi(SM_CYFRAME, dpiUi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpiUi));
+    // The strip lives inside the 1 px accent border Windows draws around a restored window (measured: native Close
+    // starts 1 px below the frame at 96 DPI, 2 px at 192): stay inside it on top and on the right, keep the bottom edge.
+    const LONG border = zoomedNow ? 0 : std::max<LONG>(1, std::lround(dpiUi / 96.0));
+    const LONG topEdge = zoomedNow ? wr.top + frame : std::max<LONG>(wr.top + cb.top, ef.top);
+    const LONG bottom = topEdge + (heightLogical_ > 0 ? LONG(std::lround(heightLogical_ * dpiUi / 96.0)) : cb.bottom - cb.top);
+    const LONG top = topEdge + border;
+    // A window without minimize/maximize buttons (dialogs) gets a narrow strip from Windows, too narrow for three
+    // dots: grow it to the width of the standard three-button group, toward the left (empty title bar area).
+    LONG left = wr.left + cb.left;
+    const LONG right = std::min<LONG>(wr.left + cb.right, ef.right - border), minW = LONG(std::lround(146.0 * dpiUi / 96.0));
+    if (right - left < minW) left = std::max<LONG>(right - minW, wr.left);
+    const Rect r{double(left), double(top), double(right - left), double(bottom - top)};
     if (r.empty()) { ShowWindow(overlay_, SW_HIDE); return; }
     const float dpi = float(GetDpiForWindow(target_)) / 96.f;
     const bool zoomed = IsZoomed(target_) != 0;
-    const bool changed = !(r == rect_) || dpi != dpi_ || zoomed != zoomed_ || !IsWindowVisible(overlay_);
+    const LONG_PTR style = GetWindowLongPtrW(target_, GWL_STYLE);
+    const bool en[3] = {true, (style & WS_MINIMIZEBOX) != 0, (style & WS_MAXIMIZEBOX) != 0};
+    const bool enChanged = !std::equal(std::begin(en), std::end(en), std::begin(enabled_));
+    std::copy(std::begin(en), std::end(en), std::begin(enabled_));
+    const bool changed = !(r == rect_) || dpi != dpi_ || zoomed != zoomed_ || enChanged || !IsWindowVisible(overlay_);
     rect_ = r;
     dpi_ = dpi;
     zoomed_ = zoomed;
@@ -285,12 +319,14 @@ void EdgePoc::render() {
     ComPtr<ID2D1SolidColorBrush> bg;
     rt->CreateSolidColorBrush(D2D1::ColorF(GetRValue(bg_) / 255.f, GetGValue(bg_) / 255.f, GetBValue(bg_) / 255.f, 1.f), &bg);
     // Restored Win11 windows round their top-right corner: overdraw left/bottom so only that corner shows.
-    const float rad = zoomed_ ? 0.f : 8.f * dpi_;
+    // The overlay sits inside the 1 px border, so its corner follows the inner curve of the window's 8 px radius.
+    const float rad = zoomed_ ? 0.f : std::max(0.f, 8.f * dpi_ - std::max(1.f, std::round(dpi_)));
     if (bg) rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(-rad, 0, float(w), float(h) + rad), rad, rad), bg.Get());
     TrafficButtonLook look[3];
     for (int i = 0; i < 3; ++i) {
         look[i].hover = float(hover_[i].value(t));
         look[i].pressed = float(press_[i].value(t));
+        look[i].disabled = !enabled_[i];
     }
     drawTrafficCircles(rt, gdi_->factory.Get(), tl_, 0, 0, dpi_, look, float(inactive_.value(t)));
     if (FAILED(rt->EndDraw())) return;
@@ -320,6 +356,7 @@ void EdgePoc::animate() {
 }
 
 void EdgePoc::onHover(int index) {
+    if (index >= 0 && !enabled_[index]) index = -1;  // a disabled dot does not react
     if (index == hot_) return;
     const double t = now();
     if (hot_ >= 0) hover_[hot_].easeTo(0.0, t, 0.12, anim::easing::easeOut);
@@ -329,14 +366,14 @@ void EdgePoc::onHover(int index) {
 }
 
 void EdgePoc::onPress(int index, bool down) {
-    if (index < 0) return;
+    if (index < 0 || !enabled_[index]) return;
     press_[index].easeTo(down ? 1.0 : 0.0, now(), 0.09, anim::easing::easeOut);
     scheduleAnimation();
 }
 
 // Goes to the exact target window. PostMessage so a hung Edge never blocks the app.
 void EdgePoc::act(int button) {
-    if (!IsWindow(target_)) return;
+    if (!IsWindow(target_) || !enabled_[button]) return;
     log::write("edge overlay: button %d", button);
     switch (static_cast<TrafficButton>(button)) {
     case TrafficButton::Close: PostMessageW(target_, WM_CLOSE, 0, 0); break;
@@ -381,6 +418,7 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN:
         pressed_ = tl_.hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        if (pressed_ >= 0 && !enabled_[pressed_]) pressed_ = -1;  // disabled dot: swallow the click, do nothing
         if (pressed_ >= 0) { SetCapture(h); onPress(pressed_, true); }
         return 0;  // the rest of the strip swallows the click: the native buttons below stay unreachable
     case WM_LBUTTONUP: {
@@ -402,10 +440,11 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ---------- EdgeOverlays ----------
 
-bool EdgeOverlays::start(HINSTANCE inst, const std::wstring& titleContains) {
+bool EdgeOverlays::start(HINSTANCE inst, const std::wstring& titleContains, EdgePoc::Rules rules) {
     if (running()) return true;
     inst_ = inst;
     title_ = titleContains;
+    rules_ = std::move(rules);
     WNDCLASSEXW wc{sizeof wc};
     wc.lpfnWndProc = &EdgeOverlays::wndProc;
     wc.hInstance = inst;
@@ -451,7 +490,8 @@ void EdgeOverlays::stop() {
 void EdgeOverlays::consider(HWND w) {
     if (!running() || overlays_.count(w) || !IsWindow(w)) return;
     bool later = false;
-    if (!EdgePoc::isEdgeWindow(w, &later)) {
+    double heightLogical = 0;
+    if (!EdgePoc::coverable(w, rules_, &heightLogical, &later)) {
         if (later && ++retries_[w] <= 3) SetTimer(msg_, kTimerRetry, 150, nullptr);  // caption buttons not laid out yet
         else retries_.erase(w);
         return;
@@ -463,7 +503,7 @@ void EdgeOverlays::consider(HWND w) {
         if (!wcsstr(text, title_.c_str())) return;
     }
     auto poc = std::make_unique<EdgePoc>();
-    if (!poc->attach(inst_, w, msg_)) return;
+    if (!poc->attach(inst_, w, msg_, heightLogical)) return;
     addPidHooks(poc->pid());
     overlays_.emplace(w, std::move(poc));
     watchReorder();
@@ -527,8 +567,10 @@ void CALLBACK EdgeOverlays::eventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LON
         return;
     }
     if (event != EVENT_OBJECT_SHOW) return;
-    wchar_t cls[32];  // cheap filter before anything else: only Chromium top-level windows are candidates
-    if (GetClassNameW(hwnd, cls, 32) && wcscmp(cls, L"Chrome_WidgetWin_1") == 0) PostMessageW(m->msg_, kMsgConsider, reinterpret_cast<WPARAM>(hwnd), 0);
+    // Cheap filter before anything else: only top-level windows with a title bar are candidates; the real checks
+    // (app profile, elevation, bounds) run on the UI thread in consider().
+    const LONG_PTR st = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((st & WS_CAPTION) == WS_CAPTION && !(st & WS_CHILD)) PostMessageW(m->msg_, kMsgConsider, reinterpret_cast<WPARAM>(hwnd), 0);
 }
 
 LRESULT CALLBACK EdgeOverlays::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {

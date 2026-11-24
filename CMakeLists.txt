@@ -22,6 +22,7 @@ add_library(mc_core STATIC
   src/ui/traffic_lights.cpp
   src/window/window_filter.cpp
   src/window/window_classifier.cpp
+  src/window/titlebar_profile.cpp
   src/config/animation_config.cpp)
 target_include_directories(mc_core PUBLIC src)
 

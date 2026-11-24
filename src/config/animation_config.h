@@ -34,6 +34,8 @@ struct AnimationConfig {
     // contains it when first seen (test aid). See docs/compatibility/edge.md.
     bool edgePocEnabled = false;
     std::string edgePocTitle;
+    std::vector<std::string> edgePocExtraApps;    // exe names with a Windows-drawn frame to opt in (e.g. "mspaint.exe")
+    std::vector<std::string> edgePocExcludeApps;  // exe names never covered
     // Desktop switch (Phase 3 UI; used by the demo now).
     double desktopDuration = 0.45;   // s
     anim::CubicBezier desktopEasing = anim::easing::emphasized;

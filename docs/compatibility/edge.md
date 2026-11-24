@@ -105,3 +105,47 @@ Found and fixed while testing:
 - Not tested: vertical tabs, Edge themes, high contrast, installed web apps (`--app` windows), a real profile with many windows.
 - Tab Actions is unchanged. The overlay stays on the right; moving the circles to the left was not attempted (separate experiment).
 - Strip height (fixed): `DWMWA_CAPTION_BUTTON_BOUNDS` reports 30 px of height but Edge's native buttons are 40 logical px tall (measured with Edge's own hover highlight on Close: y 251..289 at 96 DPI, 78 px at 192 DPI, 24..63 maximized). Covering only the bounds left the lower part of the native buttons visible as a grey patch. The overlay is now `40 * dpi` tall, from the frame top; verified to contain the measured native Close rectangle restored/96, maximized/96 and restored/192.
+
+---
+
+# Extension to other apps (experimental, off by default)
+
+Same overlay as above, now for every window of a verified app: Edge, Chrome, Explorer, Notepad, plus apps added in config
+(`globalTrafficLights.experimentalOverlay.extraApps`, Windows-drawn frames only; `excludeApps` always wins).
+Rules live in `src/window/titlebar_profile.*` (pure, unit tested). `titleContains` empty = every covered window.
+
+## What differs per app (measured with the native Close hover highlight, one disposable window each)
+
+| App | Who draws the buttons | `CAPTION_BUTTON_BOUNDS` | Real native button strip | Profile |
+|---|---|---|---|---|
+| Explorer, Notepad | Windows (DWM) | 146x30 (right) | Close 45x29 (restored, 96 DPI), 46x27.5 logical at 192 | trust the bounds |
+| Edge, Chrome | the app | 146x30 (Edge reported 146x28 on one window) | 40 logical px tall (Edge: 39/40/39 at restored 96/max 96/restored 192; Chrome: same) | height 40 |
+| VS Code (Electron) | the app | 0 wide: no information | not measured | not covered |
+| Windows Settings and other UWP | system/XAML | 0 wide | not measured | not covered |
+
+Maximized windows: the buttons start 8 px (96 DPI) below the window top for all four apps; the overlay uses
+window top + frame width.
+Windows with fewer buttons (dialogs) get a narrow strip from Windows: the overlay is widened to the three-button width and
+the dots for missing minimize/maximize are greyed out and ignore clicks.
+
+## Never covered
+Windows of this app, owned windows and tool windows, child windows, fullscreen/borderless windows, windows without
+`WS_CAPTION | WS_SYSMENU`, apps with no verified profile, and elevated windows (Windows refuses `WM_CLOSE` and
+`WM_SYSCOMMAND` from a lower-integrity process; a token that cannot be read is treated the same).
+
+## Results
+| Check | Result |
+|---|---|
+| Overlay over Explorer, Notepad, Chrome (restored, 96 DPI) | Fully covers the native buttons (screenshots) |
+| Explorer / Notepad / Chrome: yellow, green (maximize and restore), red | Verified on disposable windows; red closes only that window and the overlay is removed |
+| Window with no minimize/maximize (Windows Forms dialog opted in through `extraApps`) | Red works; yellow and green are grey and do nothing; bounds were only 49 px wide and needed the widening above |
+| VS Code, Settings (UWP) with the feature on | Not covered |
+| Resources with 2 covered windows (idle 10 s) | Working Set 18.8 MB, Private 38.0 MB, CPU 0.00% (35.5 MB private with the feature off, measured earlier). Not measured with many windows |
+
+## Limits
+- Same cost as for Edge: Snap Layout hover on the maximize button is lost for every covered window (Win+Z still works).
+- Explorer and Notepad title bars are Mica (wallpaper tinted): the overlay is one sampled color and can look slightly different from the surrounding bar.
+- Chromium apps other than Edge and Chrome (VS Code, Discord, Slack...) are not covered until each is measured.
+- Not tested: Windows Terminal, Office, Qt/GTK apps, high-contrast themes, windows on virtual desktops other than the current one.
+- Overlays are measured per window only on the disposable windows above; other apps may draw non-standard frames, so new apps go through the same measurement before being added to the built-in list.
+- Border (fixed): a restored window has a 1 px accent border (2 px at 192 DPI). The overlay used to paint over it at the top and right. It now stays inside it (top +1 px, right edge at the frame's right edge minus the border, bottom edge unchanged) and its top-right corner follows the inner curve of the 8 px window radius. Verified by screenshot at 96 and 192 DPI on an Explorer test window.

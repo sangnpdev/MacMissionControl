@@ -12,6 +12,7 @@
 #include "app/autostart.h"
 #include "ui/layout.h"
 #include "ui/traffic_lights.h"
+#include "window/titlebar_profile.h"
 #include "window/window_classifier.h"
 #include "window/window_filter.h"
 
@@ -348,6 +349,51 @@ TEST(edge_poc_config_defaults_off) {
     CHECK(loadAnimationConfig(R"({"globalTrafficLights": {"experimentalOverlay": {"enabled": true}}})", d).empty());
     CHECK(d.edgePocEnabled && d.edgePocTitle.empty());  // no title filter: every Edge window
     CHECK(!loadAnimationConfig(R"({"globalTrafficLights": {"experimentalOverlay": {"all": true}}})", d).empty());
+}
+
+// ---------- Title bar profiles (which apps get traffic lights) ----------
+static TitleBarFacts facts(const wchar_t* cls, const wchar_t* exe) {
+    TitleBarFacts f;
+    f.className = cls; f.exeName = exe;
+    f.hasCaption = f.hasSysMenu = f.captionBoundsOk = true;
+    return f;
+}
+
+TEST(profile_verified_apps_only) {
+    const std::vector<std::wstring> none;
+    auto edge = stripProfileFor(facts(L"Chrome_WidgetWin_1", L"msedge.exe"), none, none);
+    CHECK(edge.coverable && edge.heightLogical == 40.0);            // measured: Edge draws 40 px buttons
+    CHECK(stripProfileFor(facts(L"Chrome_WidgetWin_1", L"Chrome.EXE"), none, none).heightLogical == 40.0);
+    auto explorer = stripProfileFor(facts(L"CabinetWClass", L"explorer.exe"), none, none);
+    CHECK(explorer.coverable && explorer.heightLogical == 0.0);     // Windows-drawn: DWM bounds are exact
+    CHECK(stripProfileFor(facts(L"Notepad", L"notepad.exe"), none, none).coverable);
+    CHECK(!stripProfileFor(facts(L"SomeClass", L"unknown.exe"), none, none).coverable);
+    CHECK(!stripProfileFor(facts(L"Chrome_WidgetWin_1", L"code.exe"), none, none).coverable);  // Electron: not measured
+}
+
+TEST(profile_conditions_and_config_lists) {
+    const std::vector<std::wstring> none;
+    auto f = facts(L"CabinetWClass", L"explorer.exe");
+    f.captionBoundsOk = false;  // VS Code and UWP windows: Windows reports no buttons
+    CHECK(!stripProfileFor(f, none, none).coverable);
+    f = facts(L"CabinetWClass", L"explorer.exe"); f.hasSysMenu = false;
+    CHECK(!stripProfileFor(f, none, none).coverable);
+    f = facts(L"CabinetWClass", L"explorer.exe"); f.cloaked = true;
+    CHECK(!stripProfileFor(f, none, none).coverable);
+    // opt-in list works for Windows-drawn frames only, case-insensitively; exclusion always wins
+    CHECK(stripProfileFor(facts(L"MSPaintApp", L"mspaint.exe"), {L"MSPaint.exe"}, none).coverable);
+    CHECK(!stripProfileFor(facts(L"Chrome_WidgetWin_1", L"slack.exe"), {L"slack.exe"}, none).coverable);
+    CHECK(!stripProfileFor(facts(L"CabinetWClass", L"explorer.exe"), none, {L"Explorer.exe"}).coverable);
+}
+
+TEST(profile_config_lists) {
+    AnimationConfig c;
+    CHECK(loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"extraApps":["mspaint.exe"],"excludeApps":["notepad.exe","x.exe"]}}})", c).empty());
+    CHECK(c.edgePocExtraApps.size() == 1 && c.edgePocExcludeApps.size() == 2);
+    AnimationConfig d;
+    CHECK(!loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"extraApps":"mspaint.exe"}}})", d).empty());
+    CHECK(!loadAnimationConfig(R"({"globalTrafficLights":{"experimentalOverlay":{"excludeApps":[1]}}})", d).empty());
+    CHECK(d.edgePocExtraApps.empty());  // a rejected file leaves the defaults
 }
 
 // ---------- Window filter ----------

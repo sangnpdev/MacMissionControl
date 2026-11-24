@@ -61,6 +61,17 @@ public:
             else errs_.push_back(join(path, key) + " must be a string");
         }
     }
+    void textList(const json::Value& obj, const std::string& path, const char* key, std::vector<std::string>& out) {
+        const json::Value* v = obj.find(key);
+        if (!v) return;
+        if (v->type != json::Value::Type::Array) { errs_.push_back(join(path, key) + " must be an array of strings"); return; }
+        std::vector<std::string> items;
+        for (const auto& e : v->array) {
+            if (e.type != json::Value::Type::String || e.string.empty()) { errs_.push_back(join(path, key) + " must contain only non-empty strings"); return; }
+            items.push_back(e.string);
+        }
+        out = std::move(items);
+    }
     void spring(const json::Value& obj, const std::string& path, const char* key, anim::SpringParams& out) {
         const json::Value* v = obj.find(key);
         const std::string p = join(path, key);
@@ -167,9 +178,11 @@ std::vector<std::string> loadAnimationConfig(std::string_view jsonText, Animatio
         r.number(*v, "trafficLights", "spacing", c.trafficSpacing);
     }
     if (auto* g = root.find("globalTrafficLights"); r.object(g, "globalTrafficLights", {"experimentalOverlay"})) {
-        if (auto* v = g->find("experimentalOverlay"); r.object(v, "globalTrafficLights.experimentalOverlay", {"enabled", "titleContains"})) {
+        if (auto* v = g->find("experimentalOverlay"); r.object(v, "globalTrafficLights.experimentalOverlay", {"enabled", "titleContains", "extraApps", "excludeApps"})) {
             r.boolean(*v, "globalTrafficLights.experimentalOverlay", "enabled", c.edgePocEnabled);
             r.text(*v, "globalTrafficLights.experimentalOverlay", "titleContains", c.edgePocTitle);
+            r.textList(*v, "globalTrafficLights.experimentalOverlay", "extraApps", c.edgePocExtraApps);
+            r.textList(*v, "globalTrafficLights.experimentalOverlay", "excludeApps", c.edgePocExcludeApps);
         }
     }
     if (auto* v = root.find("desktopTransition"); r.object(v, "desktopTransition", {"duration", "easing", "parallax"})) {

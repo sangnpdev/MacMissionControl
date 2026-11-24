@@ -75,6 +75,7 @@ private:
     void startCompositor();
     void trimWorkingSet();
     void loadConfig();
+    EdgePoc::Rules overlayRules() const;
     void collectBenchSamples();
     void writeBenchCsv();
 

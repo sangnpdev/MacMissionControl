@@ -10,6 +10,7 @@ namespace mc {
 struct TrafficButtonLook {
     float hover = 0.f;    // 0..1: enlarged, glyph visible
     float pressed = 0.f;  // 0..1: darker
+    bool disabled = false;  // greyed out, no hover/press/glyph (window cannot minimize / maximize)
 };
 
 // `tl` rects are in the coordinates of `rt` shifted by (-originX, -originY). `inactive` 0..1 fades the
