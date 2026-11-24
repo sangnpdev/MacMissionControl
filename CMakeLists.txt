@@ -19,7 +19,9 @@ add_library(mc_core STATIC
   src/animation/gesture.cpp
   src/config/json.cpp
   src/ui/layout.cpp
+  src/ui/traffic_lights.cpp
   src/window/window_filter.cpp
+  src/window/window_classifier.cpp
   src/config/animation_config.cpp)
 target_include_directories(mc_core PUBLIC src)
 
@@ -32,11 +34,13 @@ add_executable(MissionControl WIN32
   src/desktop/virtual_desktop_provider.cpp
   src/preview/thumbnail.cpp
   src/rendering/scene_renderer.cpp
+  src/rendering/traffic_lights_draw.cpp
   src/rendering/compositor_thread.cpp
   src/diagnostics/log.cpp
   src/input/keyboard_hook.cpp
   src/app/autostart.cpp
   src/app/tray.cpp
+  src/app/edge_poc.cpp
   resources/version.rc
   resources/app.manifest)
 target_link_libraries(MissionControl PRIVATE mc_core dwmapi dcomp d3d11 d2d1 dwrite windowscodecs dxgi dxguid dbghelp ole32 shell32 shcore user32)

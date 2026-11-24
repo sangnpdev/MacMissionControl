@@ -13,8 +13,11 @@
 #include "input/keyboard_hook.h"
 #include "rendering/compositor_thread.h"
 #include <map>
+#include <set>
 
+#include "app/edge_poc.h"
 #include "ui/layout.h"
+#include "ui/traffic_lights.h"
 #include "window/window_filter.h"
 #include "window/window_manager.h"
 
@@ -55,6 +58,10 @@ private:
     std::vector<BackdropSpec> backdrops() const;
     void setFocus(HWND hwnd);
     int cardAt(double x, double y) const;
+    int focusIndex() const;                         // index in windows_ of focus_, or -1
+    TrafficLights trafficFor(std::size_t i) const;  // buttons under card i (empty if disabled or too narrow)
+    void setTrafficHot(int button);
+    void trafficAction(std::size_t i, int button);
     void onScroll(int delta);
     void endScroll();
     void onHScroll(int delta);
@@ -77,6 +84,8 @@ private:
     HWND previous_ = nullptr;
     HWND focus_ = nullptr;          // hovered or keyboard-selected card
     POINT lastMouse_{-1, -1};
+    int trafficHot_ = -1;           // hovered traffic-light button of the focused card
+    std::set<HWND> dismissed_;      // minimized from the overview: hidden until the next open
     StripLayout stripLayout_;       // overlay coordinates
     bool scrubbing_ = false;
     double scrubAccum_ = 0;
@@ -98,6 +107,7 @@ private:
     AnimationConfig cfg_;
     WindowFilterRules rules_;
     LayoutParams layout_;
+    EdgeOverlays edgeOverlays_;       // experimental, off unless enabled in config or the tray menu
     std::map<HWND, Rect> lastSlots_;  // screen coordinates; keeps cards in place when windows come and go
     WindowManager wm_;
     CompositorThread comp_;

@@ -1,4 +1,5 @@
 #include "rendering/scene_renderer.h"
+#include "rendering/traffic_lights_draw.h"
 
 #include <d2d1_1helper.h>
 #include <d2d1effects.h>
@@ -49,8 +50,9 @@ bool SceneRenderer::init(HWND overlay, int width, int height) {
     backdropLayer_ = visual(root_.Get());
     focusLayer_ = visual(root_.Get());
     labelLayer_ = visual(root_.Get());
+    trafficLayer_ = visual(root_.Get());
     stripLayer_ = visual(root_.Get());
-    if (!backdropLayer_ || !focusLayer_ || !labelLayer_ || !stripLayer_) { reset(); return false; }
+    if (!backdropLayer_ || !focusLayer_ || !labelLayer_ || !trafficLayer_ || !stripLayer_) { reset(); return false; }
     target_->SetRoot(root_.Get());
     placeBackdrop(0, 0, 0);
     placeStrip(0, 0);
@@ -63,8 +65,9 @@ void SceneRenderer::reset() {
     backdrops_.clear();
     labelFormat_.Reset();
     focus_.Reset(); focus3_.Reset(); focusRaster_ = {};
+    traffic_.Reset(); traffic3_.Reset(); trafficRaster_ = {}; trafficHot_ = -2;
     stripVisual_.Reset(); stripVisual3_.Reset(); stripRing_.Reset(); strip_ = {};
-    backdropLayer_.Reset(); focusLayer_.Reset(); labelLayer_.Reset(); stripLayer_.Reset(); root_.Reset();
+    backdropLayer_.Reset(); focusLayer_.Reset(); labelLayer_.Reset(); trafficLayer_.Reset(); stripLayer_.Reset(); root_.Reset();
     target_.Reset(); device_.Reset();
     wic_.Reset(); dwrite_.Reset(); d2d_.Reset(); d2dFactory_.Reset(); d3d_.Reset();
 }
@@ -289,6 +292,7 @@ SceneRenderer::Label SceneRenderer::createLabel(const std::wstring& title, HICON
     const auto iconBmp = iconBitmap(icon);
     const float textW = std::min(tm.widthIncludingTrailingWhitespace, label.w - (iconBmp ? iconSize + gap : 0.f));
     const float groupW = (iconBmp ? iconSize + gap : 0.f) + textW;
+    label.groupW = groupW;
     float x = std::round((label.w - groupW) / 2);
     if (iconBmp) {
         dc->DrawBitmap(iconBmp.Get(), D2D1::RectF(x, std::round((label.h - iconSize) / 2), x + iconSize, std::round((label.h - iconSize) / 2) + iconSize),
@@ -384,6 +388,38 @@ void SceneRenderer::placeFocus(const Rect& card, double opacity) {
     focus_->SetTransform(D2D1::Matrix3x2F::Translation(-focusMargin_, -focusMargin_) * D2D1::Matrix3x2F::Scale(sx, sy) *
                          D2D1::Matrix3x2F::Translation(float(card.x), float(card.y)));
     setOpacity(focus3_.Get(), opacity);
+}
+
+// ---------- traffic lights ----------
+
+void SceneRenderer::setTrafficLights(const TrafficLights& tl, float dpiScale, int hot) {
+    if (!device_ || tl.empty()) return;
+    if (traffic_ && hot == trafficHot_ && dpiScale == trafficDpi_ && tl.zone == trafficRaster_) return;
+    const UINT w = UINT(std::ceil(tl.zone.w)), h = UINT(std::ceil(tl.zone.h));
+    ComPtr<ID2D1DeviceContext> dc;
+    auto surface = beginSurface(w, h, dc);
+    if (!surface) return;
+    TrafficButtonLook look[3];
+    if (hot >= 0) look[hot].hover = 1.f;
+    drawTrafficCircles(dc.Get(), d2dFactory_.Get(), tl, tl.zone.x, tl.zone.y, dpiScale, look);
+    dc->PopAxisAlignedClip();
+    if (!endSurface(surface.Get())) return;
+    if (!traffic_) {
+        traffic_ = visual(trafficLayer_.Get());
+        if (!traffic_) return;
+        traffic_.As(&traffic3_);
+        setOpacity(traffic3_.Get(), 0);
+    }
+    traffic_->SetContent(surface.Get());
+    traffic_->SetOffsetX(std::round(float(tl.zone.x)));
+    traffic_->SetOffsetY(std::round(float(tl.zone.y)));
+    trafficRaster_ = tl.zone;
+    trafficHot_ = hot;
+    trafficDpi_ = dpiScale;
+}
+
+void SceneRenderer::placeTraffic(double opacity) {
+    if (traffic_) setOpacity(traffic3_.Get(), opacity);
 }
 
 // ---------- desktop strip ----------

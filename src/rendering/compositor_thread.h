@@ -63,6 +63,7 @@ public:
     void relayout(std::vector<CardTarget> cards, int slideDir = 0);
     void setStrip(StripContent strip);
     void focus(HWND card);  // hover / keyboard selection; null clears
+    void trafficHot(int button);  // hovered traffic-light button of the focused card, -1 none
     // Gesture: p = 0 overview, 1 windows back in place; velocity in p per second.
     void scrub(double p, double velocity);
     void cancelScrub();     // spring back to the overview
@@ -70,7 +71,7 @@ public:
     std::vector<FrameSample> takeSamples();
 
 private:
-    enum class Cmd { Prepare, Enter, Exit, Relayout, Strip, Focus, Scrub, CancelScrub };
+    enum class Cmd { Prepare, Enter, Exit, Relayout, Strip, Focus, TrafficHot, Scrub, CancelScrub };
     struct Command {
         Cmd cmd;
         double postedAt = 0;
@@ -81,6 +82,7 @@ private:
         int slideDir = 0;
         bool flag = false;    // Exit: from gesture
         double p = 0, v = 0;  // Scrub
+        int hot = -1;         // TrafficHot
     };
     struct Card {
         CardTarget target;
@@ -97,6 +99,7 @@ private:
     void dropCard(Card& c);
     Rect restRect(const Card& c) const;  // overview slot, enlarged when focused
     void retargetFocus(double now);
+    void updateTraffic(const Card* card);  // geometry + raster for the focused card
     double nowSec() const;
 
     HWND overlay_ = nullptr, notify_ = nullptr;
@@ -123,6 +126,8 @@ private:
     anim::AnimatedValue stripRingX_;
     StripContent strip_;
     Rect lastFocusRect_;
+    TrafficLights traffic_;  // of the focused card (kept while it fades out)
+    int trafficHot_ = -1;
     LARGE_INTEGER qpcFreq_{};
 };
 

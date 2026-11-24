@@ -20,6 +20,14 @@
     "scale": 1.03,
     "spring": { "stiffness": 420, "dampingRatio": 0.8, "mass": 1, "initialVelocity": 0 }
   },
+  "trafficLights": {
+    "enabled": true,
+    "diameter": 12,
+    "spacing": 20
+  },
+  "globalTrafficLights": {
+    "experimentalOverlay": { "enabled": false, "titleContains": "" }
+  },
   "desktopTransition": {
     "duration": 0.45,
     "easing": "emphasized",

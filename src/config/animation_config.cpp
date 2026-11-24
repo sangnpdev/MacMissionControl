@@ -55,6 +55,12 @@ public:
             else errs_.push_back(join(path, key) + " must be true or false");
         }
     }
+    void text(const json::Value& obj, const std::string& path, const char* key, std::string& out) {
+        if (const json::Value* v = obj.find(key)) {
+            if (v->type == json::Value::Type::String) out = v->string;
+            else errs_.push_back(join(path, key) + " must be a string");
+        }
+    }
     void spring(const json::Value& obj, const std::string& path, const char* key, anim::SpringParams& out) {
         const json::Value* v = obj.find(key);
         const std::string p = join(path, key);
@@ -111,6 +117,9 @@ std::vector<std::string> validate(const AnimationConfig& c) {
     checkEasing(errs, "dim.outEasing", c.dimOutEasing);
     checkRange(errs, "hover.scale", c.hoverScale, 0.5, 2.0);
     checkSpring(errs, "hover.spring", c.hoverSpring);
+    checkRange(errs, "trafficLights.diameter", c.trafficDiameter, 6.0, 24.0);
+    checkRange(errs, "trafficLights.spacing", c.trafficSpacing, 8.0, 40.0);
+    if (c.trafficSpacing < c.trafficDiameter + 2) errs.push_back("trafficLights.spacing must exceed the diameter");
     checkRange(errs, "desktopTransition.duration", c.desktopDuration, 0.0, 3.0);
     checkEasing(errs, "desktopTransition.easing", c.desktopEasing);
     checkRange(errs, "desktopTransition.parallax", c.desktopParallax, 0.0, 1.0);
@@ -129,7 +138,7 @@ std::vector<std::string> loadAnimationConfig(std::string_view jsonText, Animatio
     AnimationConfig c = out;
     Reader r(errs);
     const json::Value& root = *parsed.value;
-    if (!r.object(&root, "", {"$schemaVersion", "entrance", "exit", "dim", "hover", "desktopTransition", "gesture", "blur", "integration"}))
+    if (!r.object(&root, "", {"$schemaVersion", "entrance", "exit", "dim", "hover", "trafficLights", "globalTrafficLights", "desktopTransition", "gesture", "blur", "integration"}))
         return errs;
     if (const json::Value* ver = root.find("$schemaVersion"); ver && !(ver->type == json::Value::Type::Number && ver->number == 1.0))
         errs.push_back("$schemaVersion must be 1");
@@ -151,6 +160,17 @@ std::vector<std::string> loadAnimationConfig(std::string_view jsonText, Animatio
     if (auto* v = root.find("hover"); r.object(v, "hover", {"scale", "spring"})) {
         r.number(*v, "hover", "scale", c.hoverScale);
         r.spring(*v, "hover", "spring", c.hoverSpring);
+    }
+    if (auto* v = root.find("trafficLights"); r.object(v, "trafficLights", {"enabled", "diameter", "spacing"})) {
+        r.boolean(*v, "trafficLights", "enabled", c.trafficLights);
+        r.number(*v, "trafficLights", "diameter", c.trafficDiameter);
+        r.number(*v, "trafficLights", "spacing", c.trafficSpacing);
+    }
+    if (auto* g = root.find("globalTrafficLights"); r.object(g, "globalTrafficLights", {"experimentalOverlay"})) {
+        if (auto* v = g->find("experimentalOverlay"); r.object(v, "globalTrafficLights.experimentalOverlay", {"enabled", "titleContains"})) {
+            r.boolean(*v, "globalTrafficLights.experimentalOverlay", "enabled", c.edgePocEnabled);
+            r.text(*v, "globalTrafficLights.experimentalOverlay", "titleContains", c.edgePocTitle);
+        }
     }
     if (auto* v = root.find("desktopTransition"); r.object(v, "desktopTransition", {"duration", "easing", "parallax"})) {
         r.number(*v, "desktopTransition", "duration", c.desktopDuration);

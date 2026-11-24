@@ -21,6 +21,13 @@ namespace mc {
 using Microsoft::WRL::ComPtr;
 
 namespace {
+
+std::wstring widen(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    std::wstring w(utf8.size(), L' ');
+    w.resize(MultiByteToWideChar(CP_UTF8, 0, utf8.data(), int(utf8.size()), w.data(), int(w.size())));
+    return w;
+}
 constexpr int kHotkeyId = 1, kHotkeyBridgeWin = 2, kHotkeyBridge = 3;
 constexpr UINT_PTR kTimerBenchOpen = 1, kTimerBenchClose = 2, kTimerRefresh = 3, kTimerScrubEnd = 4, kTimerSwipeLock = 5;
 constexpr double kScrubTravel = 600.0;  // wheel units for a full scrub (5 mouse-wheel notches)
@@ -57,6 +64,7 @@ int App::run(HINSTANCE inst, const Options& opt) {
     }
 
     if (desktops_.init()) desktopState_ = desktops_.read();
+    if (cfg_.edgePocEnabled && opt_.benchCycles == 0) edgeOverlays_.start(inst, widen(cfg_.edgePocTitle));
 
     benchStart_ = GetTickCount64();
     if (opt_.benchCycles > 0 || opt_.show) open();
@@ -81,6 +89,7 @@ int App::run(HINSTANCE inst, const Options& opt) {
 
     // Shutdown order: keyboard hook (Win+Tab back to Windows first) -> compositor (thumbnails, GPU) -> hooks.
     // The overlay is already destroyed.
+    edgeOverlays_.stop();
     hook_.stop();
     comp_.stop();
     unhookWindowEvents();
@@ -142,6 +151,7 @@ void App::refreshWindows() {
     KillTimer(overlay_, kTimerRefresh);
     if (state_ != State::Open && state_ != State::Opening) return;
     auto fresh = wm_.enumerate(rules_);
+    std::erase_if(fresh, [&](const WindowInfo& w) { return dismissed_.contains(w.hwnd); });
     auto sameSet = [&] {
         if (fresh.size() != windows_.size()) return false;
         for (auto& w : fresh)
@@ -297,6 +307,48 @@ void App::setFocus(HWND hwnd) {
     comp_.focus(hwnd);
 }
 
+int App::focusIndex() const {
+    for (std::size_t i = 0; i < windows_.size(); ++i)
+        if (focus_ && windows_[i].hwnd == focus_) return int(i);
+    return -1;
+}
+
+TrafficLights App::trafficFor(std::size_t i) const {
+    if (!cfg_.trafficLights || i >= windows_.size() || i >= slots_.size()) return {};
+    const float d = windows_[i].dpiScale, gap = std::round(6.f * d), label = std::round(30.f * d);  // as plan() / the compositor
+    return layoutTrafficLights(slots_[i], gap, label - gap, d, {cfg_.trafficDiameter, cfg_.trafficSpacing});
+}
+
+void App::setTrafficHot(int button) {
+    if (button == trafficHot_) return;
+    trafficHot_ = button;
+    comp_.trafficHot(button);
+}
+
+// Acts on the exact window of the card. Close and minimize keep the overview open, like macOS.
+void App::trafficAction(std::size_t i, int button) {
+    const HWND h = windows_[i].hwnd;
+    if (!IsWindow(h)) return;
+    log::write("traffic light %d on %p", button, static_cast<void*>(h));
+    switch (static_cast<TrafficButton>(button)) {
+    case TrafficButton::Close:
+        PostMessageW(h, WM_CLOSE, 0, 0);  // the window may ask to save; the destroy hook removes its card
+        break;
+    case TrafficButton::Minimize:
+        PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        dismissed_.insert(h);
+        windows_.erase(windows_.begin() + i);
+        focus_ = nullptr;
+        setTrafficHot(-1);
+        comp_.relayout(plan(), 0);
+        break;
+    case TrafficButton::Zoom:
+        PostMessageW(h, WM_SYSCOMMAND, IsZoomed(h) ? SC_RESTORE : SC_MAXIMIZE, 0);
+        close(h, "zoom");
+        break;
+    }
+}
+
 int App::cardAt(double x, double y) const {
     for (std::size_t i = 0; i < slots_.size(); ++i)
         if (slots_[i].contains(x, y)) return int(i);
@@ -313,6 +365,8 @@ void App::open() {
         title[WideCharToMultiByte(CP_UTF8, 0, w.title.c_str(), int(w.title.size()), title, sizeof title - 1, nullptr, nullptr)] = 0;
         log::write("  %p min=%d [%.0f,%.0f %.0fx%.0f] %s", static_cast<void*>(w.hwnd), int(w.minimized), w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h, title);
     }
+    dismissed_.clear();
+    trafficHot_ = -1;
     lastSlots_.clear();           // a fresh open lays out from scratch
     auto strip = stripContent();  // first: plan() leaves room for the strip
     auto cards = plan();
@@ -401,7 +455,7 @@ LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void App::showTrayMenu(int x, int y) {
-    enum : UINT { kOpen = 1, kAutostart, kQuit };
+    enum : UINT { kOpen = 1, kAutostart, kEdgePoc, kQuit };
     const autostart::State as = autostart::state();
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, kOpen, L"Open Mission Control\tWin+Tab");
@@ -411,6 +465,7 @@ void App::showTrayMenu(int x, int y) {
         AppendMenuW(menu, MF_STRING, kAutostart, L"Start with Windows (turned off in Settings › Startup apps)…");
     else
         AppendMenuW(menu, MF_STRING | (as == autostart::State::On ? MF_CHECKED : 0), kAutostart, L"Start with Windows");
+    AppendMenuW(menu, MF_STRING | (edgeOverlays_.running() ? MF_CHECKED : 0), kEdgePoc, L"Edge traffic lights (experimental)");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kQuit, L"Quit");
     SetForegroundWindow(overlay_);  // required so the menu closes when the user clicks elsewhere
@@ -426,6 +481,10 @@ void App::showTrayMenu(int x, int y) {
         if (as == autostart::State::DisabledByUser) ShellExecuteW(nullptr, L"open", L"ms-settings:startupapps", nullptr, nullptr, SW_SHOWNORMAL);
         else if (as == autostart::State::On) autostart::disable();
         else autostart::enable();
+        break;
+    case kEdgePoc:
+        if (edgeOverlays_.running()) edgeOverlays_.stop();
+        else edgeOverlays_.start(GetModuleHandleW(nullptr), widen(cfg_.edgePocTitle));
         break;
     case kQuit:
         DestroyWindow(overlay_);
@@ -479,6 +538,14 @@ LRESULT App::onMessage(UINT msg, WPARAM wp, LPARAM lp) {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         if (pt.x == lastMouse_.x && pt.y == lastMouse_.y) return 0;
         lastMouse_ = pt;
+        if (const int fi = focusIndex(); fi >= 0) {
+            const TrafficLights tl = trafficFor(fi);
+            if (!tl.empty() && tl.zone.contains(pt.x, pt.y)) {  // on the buttons: keep the card hovered
+                setTrafficHot(tl.hitTest(pt.x, pt.y));
+                return 0;
+            }
+        }
+        setTrafficHot(-1);
         const int i = cardAt(pt.x, pt.y);
         setFocus(i >= 0 ? windows_[i].hwnd : nullptr);
         return 0;
@@ -507,6 +574,13 @@ LRESULT App::onMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (stripLayout_.tiles[i].contains(x, y)) { requestDesktop(int(i)); return 0; }
         if (stripLayout_.plus.contains(x, y)) { desktops_.create(); return 0; }
         if (stripLayout_.band.contains(x, y)) return 0;  // empty strip area: stay open
+        if (const int fi = focusIndex(); fi >= 0) {
+            const TrafficLights tl = trafficFor(fi);
+            if (!tl.empty() && tl.zone.contains(x, y)) {
+                if (const int b = tl.hitTest(x, y); b >= 0) trafficAction(fi, b);
+                return 0;
+            }
+        }
         const int i = cardAt(x, y);
         close(i >= 0 ? windows_[i].hwnd : previous_, "click");
         return 0;

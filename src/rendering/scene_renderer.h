@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/geometry.h"
+#include "ui/traffic_lights.h"
 
 namespace mc {
 
@@ -51,6 +52,7 @@ public:
         ComPtr<IDCompositionVisual2> visual;
         ComPtr<IDCompositionVisual3> visual3;
         float w = 0, h = 0;
+        float groupW = 0;  // width of icon + title, centered in w
     };
 
     bool init(HWND overlay, int width, int height);
@@ -63,11 +65,14 @@ public:
     Label createLabel(const std::wstring& title, HICON icon, float width, float height, float dpiScale);
     void destroyLabel(Label& label);
     void setFocusChrome(const Rect& cardRect, float dpiScale);  // rasterize ring + shadow for this size
+    // Close/minimize/zoom circles. `hot` = hovered button (-1 none); glyphs show while any is hot.
+    void setTrafficLights(const TrafficLights& tl, float dpiScale, int hot);
 
     // Per-frame properties.
     void placeBackdrop(double presence, double transition, int direction);  // transition 0..1 of a desktop slide
     void placeLabel(Label& label, const Rect& cardRect, double opacity, float gap);
     void placeFocus(const Rect& cardRect, double opacity);
+    void placeTraffic(double opacity);
     void placeStrip(double presence, double ringX);
     double stripTileX(int index) const;  // ring x for tile `index` (overlay coordinates)
     bool commit();                       // false = device lost; call init() again
@@ -97,7 +102,7 @@ private:
     ComPtr<IWICImagingFactory> wic_;
     ComPtr<IDCompositionDesktopDevice> device_;
     ComPtr<IDCompositionTarget> target_;
-    ComPtr<IDCompositionVisual2> root_, backdropLayer_, focusLayer_, labelLayer_, stripLayer_;
+    ComPtr<IDCompositionVisual2> root_, backdropLayer_, focusLayer_, labelLayer_, trafficLayer_, stripLayer_;
 
     std::vector<Backdrop> backdrops_;
     BackdropStyle style_;
@@ -108,6 +113,12 @@ private:
     ComPtr<IDCompositionVisual3> focus3_;
     Rect focusRaster_;   // card size the focus chrome was rasterized for
     float focusMargin_ = 0;
+
+    ComPtr<IDCompositionVisual2> traffic_;
+    ComPtr<IDCompositionVisual3> traffic3_;
+    Rect trafficRaster_;  // zone the circles were rasterized for
+    int trafficHot_ = -2;
+    float trafficDpi_ = 0;
 
     StripContent strip_;
     ComPtr<IDCompositionVisual2> stripVisual_, stripRing_;

@@ -79,6 +79,11 @@ void CompositorThread::focus(HWND card) {
     c.hwnd = card;
     post(std::move(c));
 }
+void CompositorThread::trafficHot(int button) {
+    Command c{Cmd::TrafficHot};
+    c.hot = button;
+    post(std::move(c));
+}
 void CompositorThread::scrub(double p, double velocity) {
     Command c{Cmd::Scrub};
     c.p = p;
@@ -141,6 +146,13 @@ Rect CompositorThread::restRect(const Card& c) const {
     return c.target.hwnd == focus_ && focus_ ? scaled(c.target.overview, cfg_.hoverScale) : c.target.overview;
 }
 
+void CompositorThread::updateTraffic(const Card* card) {
+    if (!card || !cfg_.trafficLights) return;
+    const float d = card->target.dpiScale, gap = std::round(6.f * d);
+    traffic_ = layoutTrafficLights(card->target.overview, gap, card->target.labelHeight - gap, d, {cfg_.trafficDiameter, cfg_.trafficSpacing});
+    scene_.setTrafficLights(traffic_, d, trafficHot_);
+}
+
 void CompositorThread::retargetFocus(double now) {
     for (auto& c : cards_)
         if (!c.leaving) c.motion.springTo(restRect(c), 1.0, now, cfg_.hoverSpring);
@@ -166,9 +178,20 @@ void CompositorThread::handle(Command& cmd, double now) {
         focus_ = cmd.hwnd;
         auto it = std::find_if(cards_.begin(), cards_.end(), [&](const Card& c) { return c.target.hwnd == focus_ && !c.leaving; });
         if (it == cards_.end()) focus_ = nullptr;
-        else scene_.setFocusChrome(it->target.overview, it->target.dpiScale);
+        else {
+            scene_.setFocusChrome(it->target.overview, it->target.dpiScale);
+            trafficHot_ = -1;
+            updateTraffic(&*it);
+        }
         focusAlpha_.springTo(focus_ ? 1.0 : 0.0, now, cfg_.hoverSpring, kAlphaEps);
         retargetFocus(now);
+        break;
+    }
+
+    case Cmd::TrafficHot: {
+        trafficHot_ = cmd.hot;
+        auto it = std::find_if(cards_.begin(), cards_.end(), [&](const Card& c) { return c.target.hwnd == focus_ && !c.leaving; });
+        if (it != cards_.end()) updateTraffic(&*it);
         break;
     }
 
@@ -327,14 +350,22 @@ void CompositorThread::applyFrame(double now) {
             log::write("thumbnail update failed for %p, releasing", static_cast<void*>(c.target.hwnd));
             c.thumb.reset();
         }
-        scene_.placeLabel(c.label, r, opacity * presence, std::round(6.f * c.target.dpiScale));
+        double labelOpacity = opacity * presence;
         if (c.target.hwnd == focus_ && !c.leaving) {
             lastFocusRect_ = r;
             scene_.placeFocus(r, focusAlpha_.value(now) * presence * opacity);
+            scene_.placeTraffic(focusAlpha_.value(now) * presence * opacity);
+            // The circles sit in the label row: hide the title while it would run into them.
+            if (!traffic_.empty() && cfg_.trafficLights && r.cx() - c.label.groupW / 2 < traffic_.zone.right() + 8.0 * c.target.dpiScale)
+                labelOpacity *= 1.0 - focusAlpha_.value(now);
         }
+        scene_.placeLabel(c.label, r, labelOpacity, std::round(6.f * c.target.dpiScale));
         done = done && c.motion.settled(now);
     }
-    if (!focus_ && !lastFocusRect_.empty()) scene_.placeFocus(lastFocusRect_, focusAlpha_.value(now) * presence);  // fade out in place
+    if (!focus_ && !lastFocusRect_.empty()) {  // fade out in place
+        scene_.placeFocus(lastFocusRect_, focusAlpha_.value(now) * presence);
+        scene_.placeTraffic(focusAlpha_.value(now) * presence);
+    }
     for (auto& c : cards_)
         if (c.leaving && c.motion.settled(now)) dropCard(c);
     std::erase_if(cards_, [&](const Card& c) { return c.leaving && !c.thumb && !c.label.visual; });

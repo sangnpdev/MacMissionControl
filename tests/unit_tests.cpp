@@ -11,6 +11,8 @@
 #include "input/wintab_detector.h"
 #include "app/autostart.h"
 #include "ui/layout.h"
+#include "ui/traffic_lights.h"
+#include "window/window_classifier.h"
 #include "window/window_filter.h"
 
 using namespace mc;
@@ -247,6 +249,105 @@ TEST(layout_spacing_between_cards) {
     for (std::size_t i = 0; i < out.size(); ++i)
         for (std::size_t j = i + 1; j < out.size(); ++j)
             CHECK(!scaled(out[i], 1.0).intersects(Rect{out[j].x - p.spacing + 1e-6, out[j].y - p.spacing + 1e-6, out[j].w + 2 * p.spacing - 2e-6, out[j].h + 2 * p.spacing - 2e-6}));
+}
+
+// ---------- Traffic lights ----------
+TEST(traffic_lights_geometry_and_hit_test) {
+    const Rect card{100, 100, 400, 300};
+    for (double dpi : {1.0, 1.5, 2.0}) {
+        const auto t = layoutTrafficLights(card, 6 * dpi, 24 * dpi, dpi, {});
+        CHECK(!t.empty());
+        for (int i = 0; i < 3; ++i) {
+            CHECK_NEAR(t.circle[i].w, 12 * dpi, 1e-9);
+            CHECK(t.hit[i].w >= 20 * dpi - 1e-9 && t.hit[i].h >= 20 * dpi - 1e-9);   // minimum target
+            CHECK(t.circle[i].y >= card.bottom());                                   // below the card, never over it
+            CHECK(t.zone.contains(t.circle[i].cx(), t.circle[i].cy()));
+            CHECK(t.hitTest(t.circle[i].cx(), t.circle[i].cy()) == i);
+            if (i) CHECK_NEAR(t.circle[i].cx() - t.circle[i - 1].cx(), 20 * dpi, 1e-9);
+        }
+        CHECK(!t.hit[0].intersects(t.hit[1]) && !t.hit[1].intersects(t.hit[2]));
+        CHECK(t.hitTest(card.cx(), card.cy()) == -1);  // the card itself is not a button
+        CHECK(t.circle[0].x >= card.x + 12 * dpi - 1e-9);
+    }
+}
+
+TEST(traffic_lights_hidden_on_narrow_card_or_row) {
+    CHECK(layoutTrafficLights({0, 0, 60, 100}, 6, 24, 1.0, {}).empty());
+    CHECK(layoutTrafficLights({0, 0, 400, 100}, 6, 0, 1.0, {}).empty());
+    CHECK(layoutTrafficLights({0, 0, 0, 0}, 6, 24, 1.0, {}).empty());
+    CHECK(layoutTrafficLights({0, 0, 60, 100}, 6, 24, 1.0, {}).hitTest(10, 110) == -1);
+}
+
+TEST(traffic_lights_config) {
+    AnimationConfig c;
+    CHECK(c.trafficLights);
+    CHECK(loadAnimationConfig(R"({"trafficLights": {"enabled": false, "diameter": 14, "spacing": 24}})", c).empty());
+    CHECK(!c.trafficLights && c.trafficDiameter == 14 && c.trafficSpacing == 24);
+    AnimationConfig d;
+    CHECK(!loadAnimationConfig(R"({"trafficLights": {"diameter": 12, "spacing": 12}})", d).empty());  // circles would touch
+    CHECK(!loadAnimationConfig(R"({"trafficLights": {"colour": 1}})", d).empty());
+}
+
+// ---------- Title bar classifier ----------
+static TitleBarFacts edgeFacts() {  // values read from a real Edge window on Windows 11
+    TitleBarFacts f;
+    f.className = L"Chrome_WidgetWin_1"; f.exeName = L"msedge.exe";
+    f.hasCaption = true; f.hasSysMenu = true; f.captionBoundsOk = true;
+    return f;
+}
+
+TEST(classifier_edge_is_native_fallback) {
+    const auto c = classifyTitleBar(edgeFacts());
+    CHECK(c.kind == TitleBarKind::Edge);
+    CHECK(c.mode == IntegrationMode::NativeFallback);
+}
+
+TEST(classifier_uses_window_properties_not_only_process_name) {
+    auto f = edgeFacts();
+    f.exeName = L"chrome.exe";
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Chromium);
+    f = edgeFacts(); f.className = L"SomethingElse";  // msedge.exe but not a browser frame
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Win32Standard);
+    f = edgeFacts(); f.hasSysMenu = false; f.className = L"X";
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Unsupported);
+}
+
+TEST(classifier_fullscreen_borderless_hidden_never_integrated) {
+    auto f = edgeFacts(); f.hasCaption = false; f.coversMonitor = true;
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Fullscreen);
+    f.coversMonitor = false;
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Borderless);
+    f = edgeFacts(); f.cloaked = true;
+    CHECK(classifyTitleBar(f).kind == TitleBarKind::Unsupported);
+    f = edgeFacts(); f.visible = false;
+    CHECK(classifyTitleBar(f).mode == IntegrationMode::NativeFallback);
+}
+
+TEST(traffic_lights_centered_in_strip) {
+    for (double dpi : {1.0, 2.0}) {
+        const Rect strip{0, 0, 146 * dpi, 30 * dpi};
+        const auto t = layoutTrafficLightsIn(strip, dpi, {});
+        CHECK(!t.empty());
+        for (int i = 0; i < 3; ++i) {
+            CHECK(t.circle[i].x >= 0 && t.circle[i].right() <= strip.w && t.circle[i].y >= 0 && t.circle[i].bottom() <= strip.h);
+            CHECK(t.hit[i].y >= 0 && t.hit[i].bottom() <= strip.h + 1e-9);
+            CHECK(t.hitTest(t.circle[i].cx(), t.circle[i].cy()) == i);
+        }
+        CHECK_NEAR((t.circle[0].x + t.circle[2].right()) / 2, strip.w / 2, 1e-9);   // centered
+        CHECK_NEAR(t.circle[1].cx() - t.circle[0].cx(), 20 * dpi, 1e-9);
+    }
+    CHECK(layoutTrafficLightsIn({0, 0, 30, 30}, 1.0, {}).empty());
+}
+
+TEST(edge_poc_config_defaults_off) {
+    AnimationConfig c;
+    CHECK(!c.edgePocEnabled);
+    CHECK(loadAnimationConfig(R"({"globalTrafficLights": {"experimentalOverlay": {"enabled": true, "titleContains": "X1"}}})", c).empty());
+    CHECK(c.edgePocEnabled && c.edgePocTitle == "X1");
+    AnimationConfig d;
+    CHECK(loadAnimationConfig(R"({"globalTrafficLights": {"experimentalOverlay": {"enabled": true}}})", d).empty());
+    CHECK(d.edgePocEnabled && d.edgePocTitle.empty());  // no title filter: every Edge window
+    CHECK(!loadAnimationConfig(R"({"globalTrafficLights": {"experimentalOverlay": {"all": true}}})", d).empty());
 }
 
 // ---------- Window filter ----------

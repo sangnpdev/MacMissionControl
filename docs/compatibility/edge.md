@@ -1,0 +1,107 @@
+# Compatibility report: Microsoft Edge (global traffic lights)
+
+Result: **Native Fallback.** Edge keeps its Windows buttons. The app draws nothing on Edge.
+Date: 2026-11-24. Edge 158.0.4370.33, Windows 11 26200.
+
+## Verified on this machine
+- Class `Chrome_WidgetWin_1`, style has `WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`.
+- `DWMWA_CAPTION_BUTTON_BOUNDS` = `[2600,0,2892,57]` at 192 DPI: the buttons are at the **top right**, 292 px wide (146 px at 96 DPI).
+- Screenshot from the user (Edge, default title bar): the top-left holds the tab-actions button, then the tabs. Minimize / restore / close are at the top right. There is no free area on the left.
+- Mixed DPI is real here (Edge 192 on a secondary monitor with negative x, Chrome 96).
+- Maximized window rect is 8 px larger than the screen on every side; `DWMWA_EXTENDED_FRAME_BOUNDS` gives the real frame.
+
+## Technical basis, not tested here
+- Chromium draws its own caption buttons and answers `WM_NCHITTEST` (`HTMAXBUTTON`), which is what gives Snap Layout. No flag, theme or extension moves or restyles them on Windows.
+
+## Levels
+| Level | Edge |
+|---|---|
+| 1 Native replacement | No. Needs injection or subclassing (forbidden). |
+| 2 Application-supported custom title bar | None for Edge on Windows. |
+| 3 Validated overlay | No. Native buttons stay on the right (two sets), or an overlay covering them breaks Snap Layout and pretends a replacement. |
+| 4 Fallback | **Yes.** |
+
+## Not done / needs a test if revisited
+UI Automation bounds (it may switch Chromium into accessibility mode and cost CPU/RAM), Snap Layout behavior under a covering overlay.
+
+Implemented: `classifyTitleBar` (`src/window/window_classifier.*`), pure, unit-tested, always `NativeFallback`. No consumer in the app yet.
+
+---
+
+# Experimental: traffic lights over EVERY Edge window (option B)
+
+Date: 2026-11-24. Off by default. Started as a one-window PoC, extended the same day to every Edge window. Code: `src/app/edge_poc.*`, drawing shared with the overview in
+`src/rendering/traffic_lights_draw.*`. This judges the look, it is not a supported integration.
+
+## Enable / disable
+- Config (`%LOCALAPPDATA%\MissionControl\config.json`):
+  `{"globalTrafficLights":{"experimentalOverlay":{"enabled":true}}}`
+- Target = every Edge window (class `Chrome_WidgetWin_1`, `msedge.exe`, classified `Edge`, caption-button
+  bounds available), whatever tab is open. Windows that exist at start are found once; windows shown
+  later are found through one global `EVENT_OBJECT_SHOW` hook that only looks at the window class (and
+  through the foreground event). Closed windows lose their overlay, Edge exiting removes all of them.
+- Optional `"titleContains": "TEXT"`: only windows whose title contains TEXT when first seen. A test aid
+  to cover one disposable window (the title is the active tab, so it is not tracked afterwards). Empty or
+  absent = every Edge window.
+- Tray menu: "Edge traffic lights (experimental)" toggles it at runtime (immediate stop).
+- Killing the app removes the overlays (they are windows of the app process).
+
+## What it does
+A layered, no-activate window directly above the target in Z-order (not topmost), exactly over the
+native caption-button strip from `DWMWA_CAPTION_BUTTON_BOUNDS`, painted with the sampled title bar color
+and three circles. Tab Actions, tabs and toolbar are untouched. One overlay per Edge window; each moves with its window
+through WinEvent hooks limited to the Edge process (shared by its windows), plus the global show and
+foreground hooks. Events are coalesced, there is no polling. Clicks on the
+strip are swallowed; only the circles act. Actions are `PostMessage`: `WM_CLOSE`, `WM_SYSCOMMAND`
+`SC_MINIMIZE`, `SC_MAXIMIZE`/`SC_RESTORE`.
+
+## Results, one window (disposable InPrivate window, scratch profile, Windows 11 26200)
+| Check | Result |
+|---|---|
+| Overlay placement 96 DPI / 192 DPI (second monitor, negative x) | Verified: overlay rect equals the DWM caption-button rect exactly (146x30 / 292x57) |
+| Maximized | Verified after a fix: Edge draws its buttons 8 px lower than the bounds say, so the strip is anchored at the visible top |
+| Restore / maximize via green, minimize via yellow, close via red | Verified; minimize hides the overlay, restore shows it again |
+| Hover glyphs, pressed, hover-enlarge, inactive (grey) | Verified by screenshot |
+| Press red, drag off, release | No action (verified) |
+| Move / resize | Follows (verified at read time; Edge updates asynchronously, so the overlay can lag one frame) |
+| Native Snap Layout flyout on hover of the maximize button | **Lost**: hovering the green circle shows no flyout; hovering the native button (PoC off) does |
+| Win+Z | Flyout still opens with the PoC on (2 of 2 tries; one earlier try showed none and is unexplained) |
+| Close: overlay removed | Verified: overlay is gone after the target closes (needed a process-exit wait, Edge sends no DESTROY then) |
+| 1000 start/stop cycles in one process | GDI objects 0, handles flat (135), private bytes flat |
+| Resources (MissionControl.exe, idle 10 s) | PoC on: WS 18.2 MB, Private 38.5 MB, CPU 0.00%. PoC off: WS 16.8 MB, Private 35.5 MB. While dragging the window: ~7% of one core |
+
+## Results, every window (2026-11-24, same machine)
+| Check | Result |
+|---|---|
+| Windows that exist at start (3 disposable InPrivate windows, 1 real window on the second monitor) | All attached, log `started, N window(s)` |
+| Window opened after the app started | Attached; circles visible. Needed two fixes, below |
+| Window closed with the red circle (other Edge windows keep the process alive) | Window closes, overlay removed 137 ms later |
+| Edge process exits (19 scratch processes killed) | Every overlay removed, 0 left |
+| Window title unrelated to any marker (the real window, a YouTube tab) | Attached: no title needed |
+| Idle cost with 5 windows, 10 s | Process CPU 0.0 ms |
+| Real window under another shell's menu bar | Overlay placed correctly but hidden by that always-on-top bar, as the native buttons are; not a test of the look |
+
+Color match (2026-11-24, user report: the patch looked different from Edge's bar): the title bar color changes
+a variable time after activation (profile with a theme: active `#1D1E30`, inactive `#2B2B34`), and the single
+sample taken 80 ms later kept the old color, so an inactive window showed a navy patch on a grey bar. Now
+sampled four times over ~1.4 s. Measured on a real window with the theme: overlay equals the bar next to it
+(`MATCH`) at 0.3 s and at 2 s after activating and after deactivating it, and on all four windows open.
+
+Found and fixed while testing:
+- A new Edge window is cloaked by the shell for about 0.3 s: the overlay stayed hidden because nothing
+  re-placed it. Fix: also hook `EVENT_OBJECT_CLOAKED` / `UNCLOAKED` for the Edge process.
+- Edge raises a window above the overlay 0.3-1.2 s after it appeared (measured), with no event for that
+  window, so the native buttons showed for seconds. Z-order changes of top-level windows do raise
+  `EVENT_OBJECT_REORDER`, but system-wide and constantly (about 20 per second while idle here). Fix: listen
+  to it only for 2.5 s after an Edge window appeared or was activated, then unhook (never while idle).
+- Closing a window: Chromium hides it and destroys it later with no event (the process stays alive), so the
+  overlay was left hidden. Fix: while the target is hidden, look again up to 5 times, 300 ms apart.
+
+## Limits found
+- Background color is one sample next to the strip, repeated 80, 300, 740 and 1400 ms after a move or an activation change. A theme with a gradient / mica title bar can still make a visible patch.
+- Z-order (fixed): Edge raises its window above the overlay with no event when the page is clicked, which made the overlay fall behind it. The overlay is now an **owned window** of the Edge window (`GWLP_HWNDPARENT` on our own window only), so the window manager keeps it above Edge and below other apps, and hides it with Edge. Verified: clicks in the page (3 times, >3 s apart), typing, new/switch/close tab, another window covering the strip (overlay stays behind it), minimize/restore, Win+Z. If setting the owner ever fails, the old Z-order tracking is the fallback.
+- Close sends `WM_CLOSE`; Edge may take seconds to exit.
+- A window Edge raises above the overlay long after it appeared (more than 2.5 s, with no foreground change) keeps the native buttons visible until the next move, foreground change or minimize/restore (safe failure).
+- Not tested: vertical tabs, Edge themes, high contrast, installed web apps (`--app` windows), a real profile with many windows.
+- Tab Actions is unchanged. The overlay stays on the right; moving the circles to the left was not attempted (separate experiment).
+- Strip height (fixed): `DWMWA_CAPTION_BUTTON_BOUNDS` reports 30 px of height but Edge's native buttons are 40 logical px tall (measured with Edge's own hover highlight on Close: y 251..289 at 96 DPI, 78 px at 192 DPI, 24..63 maximized). Covering only the bounds left the lower part of the native buttons visible as a grey patch. The overlay is now `40 * dpi` tall, from the frame top; verified to contain the measured native Close rectangle restored/96, maximized/96 and restored/192.

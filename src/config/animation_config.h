@@ -25,6 +25,15 @@ struct AnimationConfig {
     // Hover (Phase 4 UI; used by the demo now).
     double hoverScale = 1.03;
     anim::SpringParams hoverSpring{420.0, 0.8, 1.0, 0.0};
+    // Close / minimize / zoom circles under the hovered card.
+    bool trafficLights = true;
+    double trafficDiameter = 12.0;   // 96-dpi px
+    double trafficSpacing = 20.0;    // between circle centers
+    // Experimental: traffic lights over every Microsoft Edge window (only Edge, never other apps).
+    // Off by default. `edgePocTitle` empty = all Edge windows; otherwise only windows whose title
+    // contains it when first seen (test aid). See docs/compatibility/edge.md.
+    bool edgePocEnabled = false;
+    std::string edgePocTitle;
     // Desktop switch (Phase 3 UI; used by the demo now).
     double desktopDuration = 0.45;   // s
     anim::CubicBezier desktopEasing = anim::easing::emphasized;

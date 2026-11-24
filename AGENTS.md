@@ -9,7 +9,10 @@ Read `docs/architecture/system-design.md` and `docs/decisions/` before changing 
   Do not call DWM thumbnail or DComp APIs from the UI thread.
 - **No idle work.** The compositor thread blocks on an event while idle. Do not add timers,
   polling or a capture loop. Window changes come from `SetWinEventHook`, only while the overview
-  is open.
+  is open. The one opt-in exception is the experimental Edge traffic lights
+  (`src/app/edge_poc.cpp`, off by default): while enabled it keeps a global show hook, a global foreground
+  hook and per-Edge-process hooks; the system-wide `EVENT_OBJECT_REORDER` hook (about 20 events/s while
+  idle) is only on for 2.5 s after an Edge window appears or is activated. Keep it that way.
 - **One animation engine.** Animate through `mc::anim` (time-based, closed form). Do not add
   per-frame integration or a second animation system for chrome.
 - **Physical pixels everywhere.** The process is Per-Monitor-V2 aware (`resources/app.manifest`).
