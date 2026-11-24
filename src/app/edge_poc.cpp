@@ -202,7 +202,13 @@ bool EdgePoc::evaluate(HWND h, const Rules& rules, Cover* out, bool* maybeLater)
             GetWindowThreadProcessId(c, &reinterpret_cast<Find*>(lp)->pid);
             return FALSE;
         }, reinterpret_cast<LPARAM>(&f));
-        if (f.pid) { appPid = f.pid; facts.exeName = exeNameOf(f.pid); }
+        if (f.pid) {
+            appPid = f.pid;
+            facts.exeName = exeNameOf(f.pid);
+        } else if (maybeLater) {
+            *maybeLater = true;  // the app's CoreWindow is created a moment after the frame (measured on Settings): ask again shortly
+            return false;
+        }
     }
     const LONG_PTR st = GetWindowLongPtrW(h, GWL_STYLE);
     facts.hasCaption = (st & WS_CAPTION) == WS_CAPTION;
@@ -792,7 +798,7 @@ void EdgeOverlays::consider(HWND w) {
     const bool ok = EdgePoc::evaluate(w, rules_, &cover, &later);
     if (!later) noteApp(cover);
     if (!ok) {
-        if (later && ++retries_[w] <= 3) {
+        if (later && ++retries_[w] <= 10) {
             SetTimer(msg_, kTimerRetry, 150, nullptr);  // caption buttons not laid out yet
         } else {
             retries_.erase(w);

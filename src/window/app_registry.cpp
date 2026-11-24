@@ -68,7 +68,7 @@ const std::vector<std::wstring>& listedApps() {
     static const std::vector<std::wstring> apps{
         L"msedge.exe", L"chrome.exe", L"explorer.exe", L"notepad.exe", L"windowsterminal.exe",  // measured profiles
         L"code.exe", L"cursor.exe", L"dbx.exe", L"dbeaver.exe", L"warp.exe", L"powershell.exe", L"pwsh.exe", L"cmd.exe",
-        L"docker desktop.exe", L"studio64.exe", L"idea64.exe", L"winrar.exe", L"zalo.exe", L"discord.exe", L"cloudflare warp.exe",
+        L"docker desktop.exe", L"studio64.exe", L"idea64.exe", L"winrar.exe", L"zalo.exe", L"discord.exe", L"systemsettings.exe", L"cloudflare warp.exe",
         L"photos.exe", L"microsoft.media.player.exe", L"devenv.exe"};
     return apps;
 }
