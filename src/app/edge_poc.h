@@ -156,7 +156,7 @@ private:
     std::wstring lastApp_;
     std::unordered_map<std::wstring, AppInfo> seen_;  // by exe; at most 512
     void noteApp(const EdgePoc::Cover& c);
-    HWINEVENTHOOK showHook_ = nullptr, foregroundHook_ = nullptr, reorderHook_ = nullptr;
+    HWINEVENTHOOK showHook_ = nullptr, uncloakHook_ = nullptr, foregroundHook_ = nullptr, reorderHook_ = nullptr;
 };
 
 }  // namespace mc

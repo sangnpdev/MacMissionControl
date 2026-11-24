@@ -655,6 +655,8 @@ bool EdgeOverlays::start(HINSTANCE inst, const std::wstring& titleContains, Edge
     g_overlays = this;
     // Two global hooks, both rare: a window being shown (new Edge windows) and the foreground change.
     showHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, &EdgeOverlays::eventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+    // Explorer and other shell-hosted windows are created cloaked and uncloaked later, with no SHOW event.
+    uncloakHook_ = SetWinEventHook(EVENT_OBJECT_UNCLOAKED, EVENT_OBJECT_UNCLOAKED, nullptr, &EdgeOverlays::eventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     foregroundHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, &EdgeOverlays::eventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     EnumWindows(
         [](HWND h, LPARAM lp) -> BOOL {  // one pass at start
@@ -669,6 +671,7 @@ bool EdgeOverlays::start(HINSTANCE inst, const std::wstring& titleContains, Edge
 void EdgeOverlays::stop() {
     if (!msg_) return;
     if (showHook_) { UnhookWinEvent(showHook_); showHook_ = nullptr; }
+    if (uncloakHook_) { UnhookWinEvent(uncloakHook_); uncloakHook_ = nullptr; }
     if (foregroundHook_) { UnhookWinEvent(foregroundHook_); foregroundHook_ = nullptr; }
     if (reorderHook_) { UnhookWinEvent(reorderHook_); reorderHook_ = nullptr; }
     for (auto& [pid, hooks] : pidHooks_) {
@@ -882,11 +885,15 @@ void CALLBACK EdgeOverlays::eventProc(HWINEVENTHOOK, DWORD event, HWND hwnd, LON
         it->second->requestPlace();
         return;
     }
-    if (event != EVENT_OBJECT_SHOW) return;
+    if (event != EVENT_OBJECT_SHOW && event != EVENT_OBJECT_UNCLOAKED) return;
     // Cheap filter before anything else: only top-level windows with a title bar are candidates; the real checks
     // (app profile, elevation, bounds) run on the UI thread in consider().
     const LONG_PTR st = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    if ((st & WS_CAPTION) == WS_CAPTION && !(st & WS_CHILD)) PostMessageW(m->msg_, kMsgConsider, reinterpret_cast<WPARAM>(hwnd), 0);
+    // UNCLOAKED skips the caption test: Explorer windows are uncloaked before their final style is set (measured).
+    // The foreground event can reach a window before it is visible (Explorer: 0.5 s earlier) and cache it as rejected;
+    // a show or uncloak is fresh evidence, so it clears that verdict.
+    if (!(st & WS_CHILD) && (st & WS_CAPTION) == WS_CAPTION) m->rejected_.erase(hwnd);
+    if (!(st & WS_CHILD) && (event == EVENT_OBJECT_UNCLOAKED || (st & WS_CAPTION) == WS_CAPTION)) PostMessageW(m->msg_, kMsgConsider, reinterpret_cast<WPARAM>(hwnd), 0);
 }
 
 LRESULT CALLBACK EdgeOverlays::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
