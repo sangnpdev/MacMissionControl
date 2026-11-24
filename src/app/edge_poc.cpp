@@ -9,6 +9,7 @@
 #include <cmath>
 #include <vector>
 
+#include "app/tiling_menu.h"
 #include "diagnostics/log.h"
 #include "rendering/traffic_lights_draw.h"
 #include "window/app_registry.h"
@@ -22,13 +23,20 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 constexpr UINT kMsgPlace = WM_APP + 41;
-constexpr UINT_PTR kTimerAnim = 1, kTimerColor = 2, kTimerPlace = 3, kTimerGone = 4, kTimerMove = 5;
+constexpr UINT_PTR kTimerAnim = 1, kTimerColor = 2, kTimerPlace = 3, kTimerGone = 4, kTimerMove = 5, kTimerMenu = 6;
+constexpr UINT kMenuDelayMs = 350;  // hover on the green dot before the tiling menu opens: passing over the dots does not open it
+bool g_animationsOn = true;         // the user switch (apps.json "animations"); Windows Reduced Motion is asked each time
 constexpr UINT kMsgConsider = WM_APP + 43;
 constexpr UINT kMsgPidGone = WM_APP + 44;  // a covered process exited (posted by the process wait)
 constexpr UINT_PTR kTimerRetry = 1, kTimerReorder = 2;
 constexpr double kMoveLead = 0.008;  // s: compensates the latency of moving our window (see startMove)
 constexpr wchar_t kClass[] = L"MCEdgeTrafficLightsPoc";
 constexpr wchar_t kManagerClass[] = L"MCEdgeTrafficLightsManager";
+bool motionOn() {
+    BOOL on = TRUE;  // SPI_GETCLIENTAREAANIMATION is the Windows "Animation effects" / Reduce Motion switch
+    if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0)) on = TRUE;
+    return g_animationsOn && on;
+}
 EdgeOverlays* g_overlays = nullptr;  // one instance only; the WinEvent callback has no user data
 
 std::wstring exePathOf(DWORD pid) {
@@ -243,8 +251,9 @@ bool EdgePoc::evaluate(HWND h, const Rules& rules, Cover* out, bool* maybeLater)
     return true;
 }
 
-bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover) {
+bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover, TilingMenu* menu) {
     if (running() || !target) return false;
+    menu_ = menu;
     assess_ = cover.a;
     exe_ = cover.exe;
     heightLogical_ = cover.heightLogical;
@@ -287,7 +296,9 @@ bool EdgePoc::attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover
 }
 
 void EdgePoc::stop() {
+    if (menu_ && target_) menu_->close(target_, true);
     if (overlay_) {
+        KillTimer(overlay_, kTimerMenu);
         KillTimer(overlay_, kTimerAnim);
         KillTimer(overlay_, kTimerColor);
         KillTimer(overlay_, kTimerPlace);
@@ -322,7 +333,11 @@ bool EdgePoc::isActive(HWND fg) const {
 void EdgePoc::setActive(bool active) {
     if (active == active_) return;
     active_ = active;
-    inactive_.easeTo(active ? 0.0 : 1.0, now(), 0.18, anim::easing::easeInOut);
+    animTo(inactive_, active ? 0.0 : 1.0, 0.18, anim::easing::easeInOut);
+    if (!active) {  // losing focus closes the menu
+        KillTimer(overlay_, kTimerMenu);
+        if (menu_) menu_->close(target_, true);
+    }
     scheduleAnimation();
     scheduleColorSamples(80);  // Edge repaints its title bar (active / inactive colors differ) a moment later
     if (active) SetTimer(overlay_, kTimerPlace, 60, nullptr);  // Edge may finish raising itself after the event
@@ -360,11 +375,12 @@ void EdgePoc::place() {
         if (owner_) PostMessageW(owner_, kMsgReap, reinterpret_cast<WPARAM>(gone), 0);  // the owner frees us, never this call
         return;
     }
-    if (IsIconic(target_)) { ShowWindow(overlay_, SW_HIDE); return; }
+    if (IsIconic(target_)) { ShowWindow(overlay_, SW_HIDE); if (menu_) menu_->close(target_, true); return; }
     if (!IsWindowVisible(target_)) {
         // A closing Edge window is hidden first and destroyed a moment later with no event we get while
         // other Edge windows keep the process alive: look again a few times, then give up (a later show re-places).
         ShowWindow(overlay_, SW_HIDE);
+        if (menu_) menu_->close(target_, true);
         if (goneChecks_++ < 5) SetTimer(overlay_, kTimerGone, 300, nullptr);
         return;
     }
@@ -445,6 +461,10 @@ void EdgePoc::place() {
         startMove({double(cur.left), double(cur.top), r.w, r.h}, r);
     } else if (moving_) {
         moveTo_ = r;  // the target moved again (drag during the animation): retarget, keep the progress
+    }
+    if (menu_ && !(r == rect_)) {  // the window moved or resized under an open menu
+        const auto st = menu_->stateFor(target_);
+        if (st == TilingMenu::State::Open || st == TilingMenu::State::Opening) menu_->close(target_, true);
     }
     rect_ = r;
     dpi_ = dpi;
@@ -554,16 +574,20 @@ void EdgePoc::moveTick() {
 void EdgePoc::onHover(int index) {
     if (index >= 0 && !enabled_[index]) index = -1;  // a disabled dot does not react
     if (index == hot_) return;
-    const double t = now();
-    if (hot_ >= 0) hover_[hot_].easeTo(0.0, t, 0.12, anim::easing::easeOut);
-    if (index >= 0) hover_[index].easeTo(1.0, t, 0.12, anim::easing::easeOut);
+    if (hot_ >= 0) animTo(hover_[hot_], 0.0, 0.12, anim::easing::easeOut);
+    if (index >= 0) animTo(hover_[index], 1.0, 0.12, anim::easing::easeOut);
     hot_ = index;
     scheduleAnimation();
+    // The green dot opens the tiling menu after a short hover; moving off it before the delay cancels.
+    if (index == 2 && menu_ && WindowTiler::canTile(target_) && menu_->stateFor(target_) == TilingMenu::State::Closed)
+        SetTimer(overlay_, kTimerMenu, kMenuDelayMs, nullptr);
+    else
+        KillTimer(overlay_, kTimerMenu);
 }
 
 void EdgePoc::onPress(int index, bool down) {
     if (index < 0 || !enabled_[index]) return;
-    press_[index].easeTo(down ? 1.0 : 0.0, now(), 0.09, anim::easing::easeOut);
+    animTo(press_[index], down ? 1.0 : 0.0, 0.09, anim::easing::easeOut);
     scheduleAnimation();
 }
 
@@ -571,11 +595,42 @@ void EdgePoc::onPress(int index, bool down) {
 void EdgePoc::act(int button) {
     if (!IsWindow(target_) || !enabled_[button]) return;
     log::write("edge overlay: button %d", button);
+    KillTimer(overlay_, kTimerMenu);
+    if (menu_) menu_->close(target_, true);
     switch (static_cast<TrafficButton>(button)) {
     case TrafficButton::Close: PostMessageW(target_, WM_CLOSE, 0, 0); break;
     case TrafficButton::Minimize: PostMessageW(target_, WM_SYSCOMMAND, SC_MINIMIZE, 0); break;
     case TrafficButton::Zoom: PostMessageW(target_, WM_SYSCOMMAND, IsZoomed(target_) ? SC_RESTORE : SC_MAXIMIZE, 0); break;
     }
+}
+
+void EdgePoc::animTo(anim::AnimatedValue& v, double target, double seconds, anim::CubicBezier bez) {
+    if (motionOn()) v.easeTo(target, now(), seconds, bez);
+    else v.jump(target);  // Reduced Motion: the next render shows the final state
+}
+
+void EdgePoc::openMenu() {
+    if (!menu_ || !IsWindow(target_) || tl_.empty() || !WindowTiler::canTile(target_)) return;
+    TilingMenu::Anchor a;
+    a.target = target_;
+    a.notify = overlay_;
+    const Rect& c = tl_.circle[2];
+    a.dot = {rect_.x + c.x, rect_.y + c.y, c.w, c.h};
+    a.strip = rect_;
+    a.dpi = dpi_;
+    a.dark = (GetRValue(bg_) * 299 + GetGValue(bg_) * 587 + GetBValue(bg_) * 114) / 1000 < 128;
+    a.animate = motionOn();
+    menu_->open(a);
+}
+
+// The tiling menu closed: the green dot goes back to where the mouse really is.
+void EdgePoc::menuClosed() {
+    POINT p;
+    GetCursorPos(&p);
+    ScreenToClient(overlay_, &p);
+    RECT cr;
+    GetClientRect(overlay_, &cr);
+    onHover(PtInRect(&cr, p) ? tl_.hitTest(p.x, p.y) : -1);
 }
 
 LRESULT CALLBACK EdgePoc::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -595,6 +650,7 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         else if (wp == kTimerMove) moveTick();
         else if (wp == kTimerPlace) { KillTimer(h, kTimerPlace); place(); }
         else if (wp == kTimerGone) { KillTimer(h, kTimerGone); place(); }
+        else if (wp == kTimerMenu) { KillTimer(h, kTimerMenu); if (hot_ == 2) openMenu(); }
         else if (wp == kTimerColor) {
             KillTimer(h, kTimerColor);
             const COLORREF before = bg_;
@@ -607,11 +663,19 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         TRACKMOUSEEVENT tme{sizeof tme, TME_LEAVE, h, 0};
         TrackMouseEvent(&tme);
-        onHover(tl_.hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)));
+        const int idx = tl_.hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        onHover(idx);
+        if (menu_) menu_->anchorHover(target_, idx == 2 || idx < 0);  // another dot ends the menu; the gaps between dots keep it
         return 0;
     }
     case WM_MOUSELEAVE:
-        if (pressed_ < 0) onHover(-1);
+        KillTimer(h, kTimerMenu);
+        if (menu_) menu_->anchorHover(target_, false);
+        // While the menu is up the green dot stays lit even with the mouse on the menu; menuClosed() settles it.
+        if (pressed_ < 0 && !(menu_ && menu_->stateFor(target_) != TilingMenu::State::Closed)) onHover(-1);
+        return 0;
+    case TilingMenu::kMsgClosed:
+        menuClosed();
         return 0;
     case WM_LBUTTONDOWN:
         pressed_ = tl_.hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
@@ -652,6 +716,11 @@ bool EdgeOverlays::start(HINSTANCE inst, const std::wstring& titleContains, Edge
         log::write("edge overlays: could not create the message window");
         return false;
     }
+    if (ensureSharedFactory()) {
+        menu_ = std::make_unique<TilingMenu>();
+        menu_->init(inst, sharedFactory().Get());
+    }
+    g_animationsOn = rules_.data.animations.value_or(true);
     g_overlays = this;
     // Two global hooks, both rare: a window being shown (new Edge windows) and the foreground change.
     showHook_ = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, nullptr, &EdgeOverlays::eventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
@@ -681,6 +750,7 @@ void EdgeOverlays::stop() {
     }
     pidHooks_.clear();
     overlays_.clear();  // each overlay releases its window and objects
+    menu_.reset();
     sharedFactory().Reset();
     retries_.clear();
     rejected_.clear();
@@ -719,7 +789,7 @@ void EdgeOverlays::consider(HWND w) {
     retries_.erase(w);
     rejected_.erase(w);
     auto poc = std::make_unique<EdgePoc>();
-    if (!poc->attach(inst_, w, msg_, cover)) return;
+    if (!poc->attach(inst_, w, msg_, cover, menu_.get())) return;
     addPidHooks(poc->pid());
     overlays_.emplace(w, std::move(poc));
     watchReorder();
@@ -769,6 +839,7 @@ std::vector<AppInfo> EdgeOverlays::apps() const {
 void EdgeOverlays::applyRules(EdgePoc::Rules rules) {
     if (!running()) return;
     rules_ = std::move(rules);
+    g_animationsOn = rules_.data.animations.value_or(true);
     rejected_.clear();
     retries_.clear();
     std::vector<HWND> drop;

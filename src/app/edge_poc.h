@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "animation/animation.h"
+#include "app/tiling_menu.h"
 #include "ui/traffic_lights.h"
 #include "window/app_registry.h"
 #include "window/compat_engine.h"
@@ -52,7 +53,8 @@ public:
     // retry shortly. Elevated windows, our own windows and system shell processes never qualify.
     static bool evaluate(HWND w, const Rules& rules, Cover* out, bool* maybeLater = nullptr);
     // `owner` receives kMsgReap with the target in WPARAM once the target is gone (posted, never sent).
-    bool attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover);
+    // `menu` (optional, shared by all overlays) is the tiling menu that opens under the green dot.
+    bool attach(HINSTANCE inst, HWND target, HWND owner, const Cover& cover, TilingMenu* menu = nullptr);
     void stop();  // immediate: timers, overlay window and GDI/D2D objects are released
     bool running() const { return overlay_ != nullptr; }
     DWORD pid() const { return pid_; }
@@ -76,6 +78,9 @@ private:
     void onHover(int index);
     void onPress(int index, bool down);
     void act(int button);
+    void animTo(anim::AnimatedValue& v, double target, double seconds, anim::CubicBezier bez);  // jumps under Reduced Motion
+    void openMenu();
+    void menuClosed();
     void animate();
     void scheduleAnimation();
     void startMove(const Rect& from, const Rect& to);  // follow Windows' maximize / restore animation
@@ -104,6 +109,7 @@ private:
     COLORREF bg_ = RGB(32, 32, 32);
     TrafficLights tl_;   // overlay-local coordinates
     int hot_ = -1, pressed_ = -1;
+    TilingMenu* menu_ = nullptr;
     anim::AnimatedValue hover_[3], press_[3], inactive_;
     LARGE_INTEGER qpcFreq_{};
 
@@ -149,6 +155,7 @@ private:
     HWND msg_ = nullptr;  // message-only window: new-window candidates, reaping, retry timer
     std::wstring title_;
     EdgePoc::Rules rules_;
+    std::unique_ptr<TilingMenu> menu_;  // declared before overlays_: destroyed after them
     std::unordered_map<HWND, std::unique_ptr<EdgePoc>> overlays_;
     std::unordered_map<DWORD, PidHooks> pidHooks_;
     std::unordered_map<HWND, int> retries_;  // fresh windows without caption-button bounds yet

@@ -133,6 +133,9 @@ void parseRegistry(const json::Value& obj, const std::string& path, RegistryData
         if (k == "enabled") {
             if (v.type == json::Value::Type::Bool) out.featureEnabled = v.boolean;
             else err(errs, p, "must be true or false");
+        } else if (k == "animations") {
+            if (v.type == json::Value::Type::Bool) out.animations = v.boolean;
+            else err(errs, p, "must be true or false");
         } else if (k == "mode") {
             if (v.type == json::Value::Type::String && v.string == "listedApps") out.mode = CoverMode::ListedApps;
             else if (v.type == json::Value::Type::String && v.string == "allCompatible") out.mode = CoverMode::AllCompatible;
@@ -201,6 +204,7 @@ std::string quote(const std::string& s) {
 std::string toJson(const RegistryData& d) {
     std::string o = "{\n";
     if (d.featureEnabled) o += std::string("  \"enabled\": ") + (*d.featureEnabled ? "true" : "false") + ",\n";
+    if (d.animations) o += std::string("  \"animations\": ") + (*d.animations ? "true" : "false") + ",\n";
     o += "  \"mode\": ";
     o += d.mode == CoverMode::VerifiedOnly ? "\"verifiedOnly\"" : d.mode == CoverMode::AllCompatible ? "\"allCompatible\"" : "\"listedApps\"";
     o += ",\n  \"apps\": {";

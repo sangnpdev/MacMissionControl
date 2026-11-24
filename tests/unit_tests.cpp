@@ -11,9 +11,11 @@
 #include "input/wintab_detector.h"
 #include "app/autostart.h"
 #include "ui/layout.h"
+#include "ui/tile_menu_layout.h"
 #include "ui/traffic_lights.h"
 #include "window/app_registry.h"
 #include "window/compat_engine.h"
+#include "window/layout_engine.h"
 #include "window/titlebar_profile.h"
 #include "window/window_classifier.h"
 #include "window/window_filter.h"
@@ -561,6 +563,94 @@ TEST(profile_fixed_strips_for_apps_that_report_nothing) {
     CHECK(!stripProfileFor(f, {}, {}).coverable);
     f.exeName = L"warp.exe"; f.className = L"Window Class";
     CHECK(stripProfileFor(f, {}, {}).heightLogical == 35);
+}
+
+// ---------- Window tiling ----------
+
+TEST(tile_halves_and_quarters_share_edges_for_odd_sizes) {
+    const Rect work{-1921, 7, 1919, 1033};  // odd sizes, a monitor left of the primary one
+    const Rect L = layoutRect(TileLayout::LeftHalf, work), R = layoutRect(TileLayout::RightHalf, work);
+    CHECK(L.x == work.x && R.right() == work.right() && L.right() == R.x && L.h == work.h);
+    const Rect T = layoutRect(TileLayout::TopHalf, work), B = layoutRect(TileLayout::BottomHalf, work);
+    CHECK(T.y == work.y && B.bottom() == work.bottom() && T.bottom() == B.y);
+    const Rect tl = layoutRect(TileLayout::TopLeft, work), tr = layoutRect(TileLayout::TopRight, work);
+    const Rect bl = layoutRect(TileLayout::BottomLeft, work), br = layoutRect(TileLayout::BottomRight, work);
+    CHECK(tl.right() == tr.x && bl.right() == br.x && tl.bottom() == bl.y && tr.bottom() == br.y);
+    CHECK(tl.w + tr.w == work.w && tl.h + bl.h == work.h);
+    CHECK(layoutRect(TileLayout::Full, work) == work);
+    CHECK(tl.x == work.x && tl.y == work.y && br.right() == work.right() && br.bottom() == work.bottom());
+}
+
+TEST(tile_layout_scales_with_the_work_area_not_a_fixed_resolution) {
+    for (double w : {1280.0, 1920.0, 3440.0, 3841.0}) {
+        const Rect work{0, 0, w, 1000};
+        CHECK(layoutRect(TileLayout::LeftHalf, work).w + layoutRect(TileLayout::RightHalf, work).w == w);
+    }
+    CHECK(std::string(tileLayoutName(TileLayout::TopLeft)) == "Top Left");
+}
+
+TEST(tile_outer_rect_adds_the_invisible_border_and_scales_with_dpi) {
+    const FrameInsets in{7, 0, 7, 7};  // typical Windows 11 frame at 100%
+    const Rect v{0, 0, 960, 1040};
+    const Rect o = outerRect(v, in);
+    CHECK(o.x == -7 && o.y == 0 && o.w == 974 && o.h == 1047);
+    const FrameInsets s = scaleInsets(in, 1.5);  // moving to a 150% monitor
+    CHECK(s.left == 11 && s.top == 0 && s.bottom == 11);
+}
+
+TEST(tile_fit_keeps_a_window_with_its_own_size_inside_the_work_area) {
+    const Rect work{0, 0, 1920, 1040}, want{960, 0, 960, 1040};
+    const Rect big = fitWithin(want, 1100, 1040, work);   // min size wider than the tile: stays on screen
+    CHECK(big.right() <= work.right() && big.x == 820);
+    const Rect edge = fitWithin(want, 1300, 1040, work);  // would overflow on the right: pushed back
+    CHECK(edge.right() == work.right());
+    const Rect small = fitWithin(want, 600, 400, work);   // max size smaller than the tile: centred in it
+    CHECK(small.x == 1140 && small.y == 320);
+    const Rect near{961, 1, 959, 1041}, far{963, 0, 960, 1040};
+    CHECK(sameRect(want, near, 1) && !sameRect(want, far, 2));
+}
+
+TEST(tile_clamp_keeps_the_invisible_border_on_its_own_monitor) {
+    const Rect mon{0, 0, 1920, 1080}, outer{-7, 24, 974, 535};   // a border pixel strip reaches the monitor on the left
+    const Rect c = clampInside(outer, mon);
+    CHECK(c.x == 0 && c.y == 24 && c.right() == 967 && c.bottom() == 559);
+    const Rect inside{100, 100, 500, 400};
+    CHECK(clampInside(inside, mon) == inside);
+    CHECK(clampInside({3000, 0, 100, 100}, mon).empty());
+}
+
+TEST(tile_menu_geometry_hit_test_and_placement) {
+    for (double dpi : {1.0, 1.5, 2.0}) {
+        const TileMenuGeometry g = layoutTileMenu(dpi);
+        for (int i = 0; i < kTileLayoutCount; ++i) {
+            const Rect& t = g.tile[i];
+            CHECK(t.x >= 0 && t.y >= 0 && t.right() <= g.panel.w && t.bottom() <= g.panel.h);
+            CHECK(tileMenuHit(g, t.cx(), t.cy()) == i);
+            for (int j = i + 1; j < kTileLayoutCount; ++j) CHECK(!t.intersects(g.tile[j]));
+        }
+        CHECK(tileMenuHit(g, -1, -1) == -1);
+    }
+    const TileMenuGeometry g = layoutTileMenu(1.0);
+    const Rect work{0, 0, 1920, 1040}, strip{1700, 0, 146, 40}, dot{1815, 14, 12, 12};
+    const Rect a1{dot.x, strip.y, dot.w, strip.h}, a2{1900, 0, 12, 40}, a3{500, 1000, 12, 40};
+    const Rect below = placeTileMenu(g.panel, a1, work, 4);
+    CHECK(below.y == 44 && below.right() <= work.right() && below.x >= 0);  // under the strip, the strip stays free
+    const Rect nearEdge = placeTileMenu(g.panel, a2, work, 4);
+    CHECK(nearEdge.right() == work.right());                                // not cut by the screen edge
+    const Rect low = placeTileMenu(g.panel, a3, work, 4);
+    CHECK(low.bottom() <= work.bottom() && low.bottom() <= 1000 - 4 + 0.5);  // no room below: above the strip
+}
+
+TEST(registry_animations_switch_round_trips) {
+    RegistryData d;
+    std::vector<std::string> errs;
+    auto v = json::parse("{\"animations\": false}");
+    CHECK(v.value.has_value());
+    parseRegistry(*v.value, "apps", d, errs);
+    CHECK(errs.empty() && d.animations && !*d.animations);
+    CHECK(toJson(d).find("\"animations\": false") != std::string::npos);
+    RegistryData d2;
+    CHECK(!d2.animations);  // unset = animations on
 }
 
 // ---------- Window filter ----------

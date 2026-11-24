@@ -20,6 +20,8 @@ add_library(mc_core STATIC
   src/config/json.cpp
   src/ui/layout.cpp
   src/ui/traffic_lights.cpp
+  src/ui/tile_menu_layout.cpp
+  src/window/layout_engine.cpp
   src/window/window_filter.cpp
   src/window/window_classifier.cpp
   src/window/titlebar_profile.cpp
@@ -45,6 +47,8 @@ add_executable(MissionControl WIN32
   src/app/tray.cpp
   src/app/edge_poc.cpp
   src/app/settings_window.cpp
+  src/app/window_tiler.cpp
+  src/app/tiling_menu.cpp
   resources/version.rc
   resources/app.manifest)
 target_link_libraries(MissionControl PRIVATE mc_core dwmapi dcomp d3d11 d2d1 dwrite windowscodecs dxgi dxguid dbghelp ole32 shell32 shcore user32 comctl32 comdlg32 version)

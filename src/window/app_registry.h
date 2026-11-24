@@ -27,6 +27,7 @@ struct WindowRule {
 
 struct RegistryData {
     CoverMode mode = CoverMode::ListedApps;
+    std::optional<bool> animations;            // false: no animation in the dots and the tiling menu (Windows Reduced Motion also turns it off)
     std::optional<bool> featureEnabled;        // the user's own on/off switch (settings window / tray); unset = config decides
     std::map<std::wstring, AppSettings> apps;  // key: lower-case exe file name
     std::vector<WindowRule> windows;

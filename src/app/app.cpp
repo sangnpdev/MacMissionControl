@@ -182,6 +182,7 @@ EdgePoc::Rules App::overlayRules() const {
     for (const auto& [exe, s] : userApps_.apps) r.data.apps[exe] = s;
     for (const auto& w : userApps_.windows) r.data.windows.push_back(w);
     r.data.mode = userApps_.mode;
+    if (userApps_.animations) r.data.animations = userApps_.animations;
     return r;
 }
 

@@ -14,7 +14,10 @@ Read `docs/architecture/system-design.md` and `docs/decisions/` before changing 
   a global foreground hook and per-target-process hooks with one process wait per process; the system-wide
   `EVENT_OBJECT_REORDER` hook (about 20 events/s while idle) exists only while an overlay that could not be made an owned
   window exists (UWP frames) and only for 2.5 s after a window appears or is activated. Keep it that way. The probe sends
-  `WM_NCHITTEST` with a timeout, once per window; never to excluded, elevated or own windows.
+  `WM_NCHITTEST` with a timeout, once per window; never to excluded, elevated or own windows. The tiling menu on the green
+  dot (`src/app/tiling_menu.cpp`, ADR-009) adds only one-shot timers (hover 350 ms, close grace 200 ms, verify 150 ms) and a
+  15 ms animation timer that runs only while something moves. It is ONE popup for the whole app, never one per window; every
+  dot / menu animation goes through `animTo`, which jumps under Reduced Motion. Actions never wait for an animation.
 - **One animation engine.** Animate through `mc::anim` (time-based, closed form). Do not add
   per-frame integration or a second animation system for chrome.
 - **Physical pixels everywhere.** The process is Per-Monitor-V2 aware (`resources/app.manifest`).
@@ -38,7 +41,7 @@ Read `docs/architecture/system-design.md` and `docs/decisions/` before changing 
   state. Never restart a card from a stored start rect: that drops velocity and causes a jolt.
 - Integration tests must pump messages while waiting (`pump()`), and must wait for the product's
   own filter to accept new windows: the shell cloaks and re-cloaks new windows for a while.
-- Pure modules (`animation`, `ui/layout`, `window/window_filter`, `config`) must stay free of
+- Pure modules (`animation`, `ui/layout`, `ui/tile_menu_layout`, `window/layout_engine`, `window/window_filter`, `config`) must stay free of
   `<windows.h>` and must have unit tests in `tests/unit_tests.cpp`.
 
 ## Verify before claiming done
