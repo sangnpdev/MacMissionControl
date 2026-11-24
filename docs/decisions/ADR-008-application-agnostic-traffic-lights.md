@@ -184,3 +184,12 @@ Excluded + Remove (overlay back at once), Enable switch (9 overlays to 0 and bac
 confirmation for an unseen app, cancelling the file dialog. 40 open/close cycles of the window: GDI objects 95, USER objects 64,
 handles 1213 and private bytes 41.3 MB all flat after the first cycle (the first one loads the common controls).
 Cosmetic: on the General tab the static texts have the dialog background instead of the tab page color.
+
+## Active / inactive color sync (2026-11-24)
+
+The app's own title bar changes color at once on activation (measured with a 2 ms pixel probe on Edge and on a plain Windows
+frame: the switch happens 7 to 20 ms after the activation, no fade). The overlay used to sample the bar 80 ms later and jump,
+while the dots faded over 180 ms: three moments, two visible effects. Now `EdgePoc::followTitleBar()` samples the bar right away
+and every 12 ms for about 0.3 s, and shows the color it sees without easing of its own; the dots fade in 0.12 s from the same
+moment. Measured the same way after the change: the overlay changes in the same 2 ms sample as the app's bar (11 to 16 ms after the
+switch), where it used to trail by 87 to 127 ms. The timer runs only after an activation change, never idle.

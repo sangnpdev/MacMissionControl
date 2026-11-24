@@ -73,6 +73,7 @@ private:
     void setActive(bool active);
     void place();        // geometry + z-order; hides while the target is minimized or cloaked
     void sampleColor();  // title bar color next to the buttons
+    void followTitleBar();  // after an activation change: sample the bar at once and every 12 ms for ~0.3 s
     void scheduleColorSamples(int firstDelayMs);  // several samples over the next ~1.4 s after the first
     void render();
     void onHover(int index);
@@ -99,6 +100,7 @@ private:
     bool enabled_[3] = {true, true, true};  // close / minimize / zoom as the window's style allows
     bool owned_ = false;  // overlay is an owned window of the target (system keeps it above Edge)
     int goneChecks_ = 0;  // re-checks of a hidden target (see place())
+    int colorBurst_ = 0;  // fast samples left (followTitleBar())
     int colorChecks_ = 0; // color samples left (see scheduleColorSamples())
     Rect rect_;          // overlay rect, screen px (final position; during a move the window is between)
     bool moving_ = false;  // following the maximize / restore animation

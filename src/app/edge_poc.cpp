@@ -333,13 +333,13 @@ bool EdgePoc::isActive(HWND fg) const {
 void EdgePoc::setActive(bool active) {
     if (active == active_) return;
     active_ = active;
-    animTo(inactive_, active ? 0.0 : 1.0, 0.18, anim::easing::easeInOut);
+    animTo(inactive_, active ? 0.0 : 1.0, 0.12, anim::easing::easeInOut);
     if (!active) {  // losing focus closes the menu
         KillTimer(overlay_, kTimerMenu);
         if (menu_) menu_->close(target_, true);
     }
     scheduleAnimation();
-    scheduleColorSamples(80);  // Edge repaints its title bar (active / inactive colors differ) a moment later
+    followTitleBar();  // the app repaints its title bar within ~10-20 ms: the overlay follows it sample by sample
     if (active) SetTimer(overlay_, kTimerPlace, 60, nullptr);  // Edge may finish raising itself after the event
 }
 
@@ -351,9 +351,25 @@ void EdgePoc::onForeground(HWND fg) {
 
 // Edge changes its title bar color a variable time after activation, and a single early sample kept the old
 // color (measured: navy patch on a grey inactive bar). Sample at 80 ms and three more times, ending after ~1.4 s.
+// The app's own title bar changes color at once (measured with a 2 ms pixel probe: Edge and a plain Windows frame both
+// switch within 7-20 ms of the activation, no fade), and an overlay that looked at the bar 80 ms later lagged by ~90 ms
+// plus its own fade: two separate effects. Now the overlay samples the bar right away and then every 12 ms for ~0.3 s,
+// and shows the color it sees (no easing of its own: the bar it continues has none). The slower samples of
+// scheduleColorSamples() follow for apps that settle later. Runs only after an activation change, never idle.
+void EdgePoc::followTitleBar() {
+    if (!overlay_) return;
+    colorBurst_ = 24;
+    colorChecks_ = 3;
+    const COLORREF before = bg_;
+    sampleColor();
+    if (bg_ != before) render();
+    SetTimer(overlay_, kTimerColor, 12, nullptr);
+}
+
 void EdgePoc::scheduleColorSamples(int firstDelayMs) {
     if (!overlay_) return;
     colorChecks_ = 3;
+    colorBurst_ = 0;
     SetTimer(overlay_, kTimerColor, UINT(firstDelayMs), nullptr);
 }
 
@@ -656,7 +672,8 @@ LRESULT EdgePoc::onMessage(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             const COLORREF before = bg_;
             sampleColor();
             if (bg_ != before) render();
-            if (colorChecks_-- > 0) SetTimer(h, kTimerColor, 220 * (3 - colorChecks_), nullptr);  // 220, 440, 660 ms later
+            if (colorBurst_ > 0) { --colorBurst_; SetTimer(h, kTimerColor, 12, nullptr); }
+            else if (colorChecks_-- > 0) SetTimer(h, kTimerColor, 220 * (3 - colorChecks_), nullptr);  // 220, 440, 660 ms later
         }
         return 0;
     case WM_MOUSEACTIVATE: return MA_NOACTIVATE;  // never take focus from Edge
