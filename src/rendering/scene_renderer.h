@@ -41,6 +41,8 @@ struct StripContent {
     std::vector<Rect> tiles;         // overlay coordinates
     std::vector<std::wstring> names;
     Rect plus;                       // empty = no button
+    std::vector<Rect> closes;        // "remove desktop" buttons, one per tile (empty = none)
+    int hot = -1;                    // tile under the mouse: shows its close button
     int current = -1;
     float dpiScale = 1.0f;
     bool operator==(const StripContent&) const = default;
@@ -61,7 +63,7 @@ public:
 
     // Static content; each call is cheap when its inputs did not change.
     void setBackdrops(const std::vector<BackdropSpec>& specs, const BackdropStyle& style);
-    void setStrip(const StripContent& strip);
+    void setStrip(const StripContent& strip);  // a change of `hot` alone only moves the close button
     Label createLabel(const std::wstring& title, HICON icon, float width, float height, float dpiScale);
     void destroyLabel(Label& label);
     void setFocusChrome(const Rect& cardRect, float dpiScale);  // rasterize ring + shadow for this size
@@ -93,6 +95,7 @@ private:
     ComPtr<IDCompositionSurface> beginSurface(UINT w, UINT h, ComPtr<ID2D1DeviceContext>& dc);
     bool endSurface(IDCompositionSurface* s);
     ComPtr<IDCompositionVisual2> visual(IDCompositionVisual2* parent);
+    void placeStripClose();  // shows the close button on strip_.hot, hides it otherwise
 
     HWND overlay_ = nullptr;
     ComPtr<ID3D11Device> d3d_;
@@ -121,8 +124,8 @@ private:
     float trafficDpi_ = 0;
 
     StripContent strip_;
-    ComPtr<IDCompositionVisual2> stripVisual_, stripRing_;
-    ComPtr<IDCompositionVisual3> stripVisual3_;
+    ComPtr<IDCompositionVisual2> stripVisual_, stripRing_, stripClose_;
+    ComPtr<IDCompositionVisual3> stripVisual3_, stripClose3_;
     float stripRingPad_ = 0;
 };
 

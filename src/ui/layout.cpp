@@ -251,6 +251,7 @@ StripLayout layoutStrip(const Rect& monitor, int count, double aspect, bool show
     const double y = monitor.y + p.padding;
     for (int i = 0; i < count; ++i) {
         out.tiles.push_back({x, y, tileW, tileH});
+        if (count >= 2) out.closes.push_back({x - p.closeSize / 2, y - p.closeSize / 2, p.closeSize, p.closeSize});
         x += tileW + p.gap;
     }
     if (showPlus) out.plus = {x, y, tileH * 0.6, tileH};

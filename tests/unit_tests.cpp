@@ -924,6 +924,9 @@ TEST(strip_layout) {
     CHECK(many.tiles.front().x >= mon.x + sp.padding - 1e-6 && many.plus.right() <= mon.right() - sp.padding + 1e-6);
     CHECK(layoutStrip(mon, 2, 16.0 / 9.0, false, sp).plus.empty());
     CHECK(layoutStrip(mon, 0, 16.0 / 9.0, true, sp).tiles.empty());
+    CHECK(s.closes.size() == 3 && s.closes[1].contains(s.tiles[1].x, s.tiles[1].y));
+    for (auto& c : s.closes) CHECK(c.y >= s.band.y);  // inside the strip surface
+    CHECK(layoutStrip(mon, 1, 16.0 / 9.0, true, sp).closes.empty());  // the last desktop cannot be removed
 }
 
 TEST(keyboard_navigation) {

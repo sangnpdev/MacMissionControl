@@ -74,6 +74,8 @@ private:
     void refreshWindows();      // re-enumerate; relayout if the set of windows changed
     void onDesktopChanged();
     void requestDesktop(int index);
+    void removeDesktop(int index);  // switches to it first when it is not current (the shell removes only the current one)
+    int stripTileAt(double x, double y) const;  // tile (or its close button) under the point, or -1
     std::vector<CardTarget> plan();  // layout of windows_ into slots_, in overlay coordinates
     void startCompositor();
     void trimWorkingSet();
@@ -109,6 +111,9 @@ private:
     VirtualDesktopProvider desktops_;
     std::optional<DesktopState> desktopState_;
     int pendingDesktop_ = -1;      // target of a multi-step switch, -1 = none
+    DesktopId removeId_;           // desktop to remove once it is current; null = none
+    DesktopId returnId_;           // desktop to go back to after that removal
+    int stripHot_ = -1;            // strip tile under the mouse (shows its close button)
     int slideDir_ = 0;             // direction of the last desktop switch
     ULONGLONG slideUntil_ = 0;     // window changes before this tick slide with the switch
 

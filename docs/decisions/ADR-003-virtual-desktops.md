@@ -22,7 +22,7 @@ One provider, `VirtualDesktopProvider`, built only on public mechanisms and a re
 | Change notification | `RegNotifyChangeKeyValue` (subtree, thread-agnostic, event) | Public API on an undocumented key | event arrives ~8 ms after the shell cloaks the old desktop's windows |
 | Switch | `SendInput` Ctrl+Win+Left/Right, one press per confirmed change | Public API + documented user shortcut | 250–391 ms per step until the registry shows it |
 | Create | `SendInput` Ctrl+Win+D (also switches to it) | Public + documented shortcut | 78 ms |
-| Remove | `SendInput` Ctrl+Win+F4, current desktop only | Public + documented shortcut | removal visible in the registry at the next read |
+| Remove | `SendInput` Ctrl+Win+F4, current desktop only. The strip's close button (hover a tile, 2+ desktops) removes another desktop by switching to it, checking its id is current, pressing Ctrl+Win+F4, then switching back | Public + documented shortcut | removal visible in the registry at the next read |
 | Keep the overlay visible across switches | nothing needed: `WS_EX_TOOLWINDOW` windows show on every desktop | Verified behaviour | `desktop_tests` |
 
 Rules:
@@ -44,6 +44,7 @@ Rules:
 - Switching to a desktop several positions away passes through the ones between (one shortcut per
   step, each with the shell's own slide). Measured 250–391 ms per step.
 - Only the current desktop can be removed; its windows move to the adjacent desktop (shell behaviour).
+  Removing another desktop from the strip therefore slides through it and back.
 - UIPI: when the foreground window belongs to an elevated process, injected shortcuts are blocked.
   While the overview is open, our overlay is in the foreground, so this does not apply there.
 - Renaming desktops is not possible through public means.

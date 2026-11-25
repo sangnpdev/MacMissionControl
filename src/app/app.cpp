@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <map>
+#include <utility>
 
 #include "app/autostart.h"
 #include "app/overlay_window.h"
@@ -134,6 +135,17 @@ void App::onDesktopChanged() {
         const int steps = switchSteps(s->current, std::min(pendingDesktop_, int(s->desktops.size()) - 1));
         if (steps == 0 || !desktops_.step(steps > 0 ? 1 : -1)) pendingDesktop_ = -1;
     }
+    // Remove a desktop that was not current: reached it -> Ctrl+Win+F4 (only after checking its id);
+    // removed -> back to the desktop the user was on.
+    if (!removeId_.isNull() && pendingDesktop_ < 0) {
+        if (s->indexOf(removeId_) < 0) {
+            removeId_ = {};
+            const int back = s->indexOf(std::exchange(returnId_, {}));
+            if (back >= 0) requestDesktop(back);
+        } else if (!(s->desktops[s->current].id == removeId_) || s->desktops.size() < 2 || !desktops_.removeCurrent()) {
+            removeId_ = returnId_ = {};  // the switch went elsewhere: never remove a desktop we did not aim at
+        }
+    }
     if (state_ == State::Open || state_ == State::Opening) {
         const int afterIdx = s->current;
         const int beforeIdx = s->indexOf(beforeId);  // -1 if the old desktop was removed
@@ -144,12 +156,29 @@ void App::onDesktopChanged() {
 }
 
 void App::requestDesktop(int index) {
+    removeId_ = returnId_ = {};  // any other switch cancels a pending removal
     if (!desktopState_ || desktopState_->current < 0) return;
     index = std::clamp(index, 0, int(desktopState_->desktops.size()) - 1);
     const int steps = switchSteps(desktopState_->current, index);
     if (steps == 0) return;
     pendingDesktop_ = index;
     if (!desktops_.step(steps > 0 ? 1 : -1)) pendingDesktop_ = -1;
+}
+
+void App::removeDesktop(int index) {
+    if (!desktopState_ || desktopState_->current < 0 || desktopState_->desktops.size() < 2) return;
+    if (index < 0 || index >= int(desktopState_->desktops.size())) return;
+    log::write("desktop: remove %d (current %d)", index, desktopState_->current);
+    if (index == desktopState_->current) { desktops_.removeCurrent(); return; }
+    const DesktopId target = desktopState_->desktops[index].id, back = desktopState_->desktops[desktopState_->current].id;
+    requestDesktop(index);
+    if (pendingDesktop_ >= 0) { removeId_ = target; returnId_ = back; }
+}
+
+int App::stripTileAt(double x, double y) const {
+    for (std::size_t i = 0; i < stripLayout_.tiles.size(); ++i)
+        if (stripLayout_.tiles[i].contains(x, y) || (i < stripLayout_.closes.size() && stripLayout_.closes[i].contains(x, y))) return int(i);
+    return -1;
 }
 
 void App::refreshWindows() {
@@ -286,13 +315,15 @@ StripContent App::stripContent() {
     if (!GetMonitorInfoW(primary, &mi)) return s;
     const float d = dpiScaleOf(primary);
     StripParams sp;
-    sp.minHeight *= d; sp.maxHeight *= d; sp.padding *= d; sp.gap *= d; sp.nameHeight *= d;
+    sp.minHeight *= d; sp.maxHeight *= d; sp.padding *= d; sp.gap *= d; sp.nameHeight *= d; sp.closeSize = std::round(sp.closeSize * d);
     const Rect work = toOverlay({double(mi.rcWork.left), double(mi.rcWork.top), double(mi.rcWork.right - mi.rcWork.left), double(mi.rcWork.bottom - mi.rcWork.top)});
     const double aspect = double(mi.rcMonitor.right - mi.rcMonitor.left) / std::max(1L, mi.rcMonitor.bottom - mi.rcMonitor.top);
     stripLayout_ = layoutStrip(work, int(desktopState_->desktops.size()), aspect, true, sp);
     s.band = stripLayout_.band;
     s.tiles = stripLayout_.tiles;
     s.plus = stripLayout_.plus;
+    s.closes = stripLayout_.closes;
+    s.hot = stripHot_ < int(s.closes.size()) ? stripHot_ : -1;
     s.current = desktopState_->current;
     s.dpiScale = d;
     for (int i = 0; i < int(desktopState_->desktops.size()); ++i) s.names.push_back(desktopState_->displayName(i));
@@ -441,6 +472,7 @@ void App::open() {
     dismissed_.clear();
     trafficHot_ = -1;
     lastSlots_.clear();           // a fresh open lays out from scratch
+    stripHot_ = -1;
     auto strip = stripContent();  // first: plan() leaves room for the strip
     auto cards = plan();
     focus_ = nullptr;
@@ -458,6 +490,7 @@ void App::close(HWND selected, const char* reason, bool fromGesture) {
     log::write("close: %s, selected %p", reason, static_cast<void*>(selected));
     state_ = State::Closing;
     pendingDesktop_ = -1;
+    removeId_ = returnId_ = {};
     scrubbing_ = false;
     KillTimer(overlay_, kTimerScrubEnd);
     unhookWindowEvents();
@@ -652,6 +685,10 @@ LRESULT App::onMessage(UINT msg, WPARAM wp, LPARAM lp) {
         const POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         if (pt.x == lastMouse_.x && pt.y == lastMouse_.y) return 0;
         lastMouse_ = pt;
+        if (const int hot = stripTileAt(pt.x, pt.y); hot != stripHot_) {
+            stripHot_ = hot;
+            comp_.setStrip(stripContent());
+        }
         if (const int fi = focusIndex(); fi >= 0) {
             const TrafficLights tl = trafficFor(fi);
             if (!tl.empty() && tl.zone.contains(pt.x, pt.y)) {  // on the buttons: keep the card hovered
@@ -687,6 +724,8 @@ LRESULT App::onMessage(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: {
         if (state_ != State::Open && state_ != State::Opening) return 0;
         const double x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        for (std::size_t i = 0; i < stripLayout_.closes.size(); ++i)
+            if (int(i) == stripHot_ && stripLayout_.closes[i].contains(x, y)) { removeDesktop(int(i)); return 0; }
         for (std::size_t i = 0; i < stripLayout_.tiles.size(); ++i)
             if (stripLayout_.tiles[i].contains(x, y)) { requestDesktop(int(i)); return 0; }
         if (stripLayout_.plus.contains(x, y)) { desktops_.create(); return 0; }

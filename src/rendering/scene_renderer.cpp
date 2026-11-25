@@ -66,7 +66,7 @@ void SceneRenderer::reset() {
     labelFormat_.Reset();
     focus_.Reset(); focus3_.Reset(); focusRaster_ = {};
     traffic_.Reset(); traffic3_.Reset(); trafficRaster_ = {}; trafficHot_ = -2;
-    stripVisual_.Reset(); stripVisual3_.Reset(); stripRing_.Reset(); strip_ = {};
+    stripVisual_.Reset(); stripVisual3_.Reset(); stripRing_.Reset(); stripClose_.Reset(); stripClose3_.Reset(); strip_ = {};
     backdropLayer_.Reset(); focusLayer_.Reset(); labelLayer_.Reset(); trafficLayer_.Reset(); stripLayer_.Reset(); root_.Reset();
     target_.Reset(); device_.Reset();
     wic_.Reset(); dwrite_.Reset(); d2d_.Reset(); d2dFactory_.Reset(); d3d_.Reset();
@@ -425,11 +425,19 @@ void SceneRenderer::placeTraffic(double opacity) {
 // ---------- desktop strip ----------
 
 void SceneRenderer::setStrip(const StripContent& s) {
-    if (!device_ || (s == strip_ && stripVisual_)) return;
+    if (!device_) return;
+    StripContent sameHot = s;
+    sameHot.hot = strip_.hot;
+    if (sameHot == strip_ && stripVisual_) {  // hover only: no re-raster (the tile preview decodes the wallpaper)
+        strip_.hot = s.hot;
+        placeStripClose();
+        return;
+    }
     strip_ = s;
     if (stripVisual_) stripLayer_->RemoveVisual(stripVisual_.Get());
     if (stripRing_) stripLayer_->RemoveVisual(stripRing_.Get());
-    stripVisual_.Reset(); stripVisual3_.Reset(); stripRing_.Reset();
+    if (stripClose_) stripLayer_->RemoveVisual(stripClose_.Get());
+    stripVisual_.Reset(); stripVisual3_.Reset(); stripRing_.Reset(); stripClose_.Reset(); stripClose3_.Reset();
     if (s.band.empty() || s.tiles.empty()) return;
 
     const float d = s.dpiScale, radius = 8.f * d;
@@ -503,6 +511,38 @@ void SceneRenderer::setStrip(const StripContent& s) {
     if (!stripRing_) return;
     stripRing_->SetContent(ringSurface.Get());
     stripRing_->SetOffsetY(float(t0.y) - stripRingPad_);
+
+    // Close button: one visual, moved to the hovered tile (macOS style: dark disc with a light cross).
+    if (s.closes.empty()) return;
+    const UINT cs = UINT(std::ceil(s.closes.front().w));
+    ComPtr<ID2D1DeviceContext> cdc;
+    auto closeSurface = beginSurface(cs, cs, cdc);
+    if (!closeSurface) return;
+    ComPtr<ID2D1SolidColorBrush> disc, edge, cross;
+    cdc->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.92f), &disc);
+    cdc->CreateSolidColorBrush(white(0.35f), &edge);
+    cdc->CreateSolidColorBrush(white(0.95f), &cross);
+    const float c = cs / 2.f, rad = c - 0.5f, arm = cs * 0.2f, pen = std::max(1.5f, 1.6f * d);
+    cdc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(c, c), rad, rad), disc.Get());
+    cdc->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(c, c), rad - 0.5f, rad - 0.5f), edge.Get(), 1.f);
+    cdc->DrawLine(D2D1::Point2F(c - arm, c - arm), D2D1::Point2F(c + arm, c + arm), cross.Get(), pen);
+    cdc->DrawLine(D2D1::Point2F(c - arm, c + arm), D2D1::Point2F(c + arm, c - arm), cross.Get(), pen);
+    cdc->PopAxisAlignedClip();
+    if (!endSurface(closeSurface.Get())) return;
+    stripClose_ = visual(stripLayer_.Get());
+    if (!stripClose_) return;
+    stripClose_->SetContent(closeSurface.Get());
+    stripClose_.As(&stripClose3_);
+    placeStripClose();
+}
+
+void SceneRenderer::placeStripClose() {
+    if (!stripClose_ || !stripClose3_) return;
+    const bool show = strip_.hot >= 0 && strip_.hot < int(strip_.closes.size());
+    stripClose3_->SetVisible(show);
+    if (!show) return;
+    stripClose_->SetOffsetX(float(strip_.closes[strip_.hot].x));
+    stripClose_->SetOffsetY(float(strip_.closes[strip_.hot].y));
 }
 
 double SceneRenderer::stripTileX(int index) const {

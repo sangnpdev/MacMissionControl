@@ -30,11 +30,13 @@ struct StripParams {
     double padding = 12.0;
     double gap = 18.0;
     double nameHeight = 22.0;      // under each tile
+    double closeSize = 18.0;       // "remove desktop" button; centered on a tile's top-left corner, so keep it <= 2 * padding
 };
 struct StripLayout {
     Rect band;                     // whole strip; the overview layout starts below it
     std::vector<Rect> tiles;       // one per desktop, left to right
     Rect plus;                     // "new desktop" button; empty if not shown
+    std::vector<Rect> closes;      // "remove desktop" button per tile; empty with fewer than 2 desktops
 };
 StripLayout layoutStrip(const Rect& monitor, int count, double aspect, bool showPlus, const StripParams& p);
 
